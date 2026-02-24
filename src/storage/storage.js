@@ -23,11 +23,11 @@ const config = {
   key_file: pemFilePath,
 };
 
-// For Live Deployment
-// const configFilePath = path.resolve("/tmp", "oci_config");
-
-// For local Testing
-const configFilePath = path.resolve(__dirname, "oci_config");
+// Vercel/serverless: filesystem is read-only except /tmp
+const isVercel = process.env.VERCEL === "1";
+const configFilePath = isVercel
+  ? path.resolve("/tmp", "oci_config")
+  : path.resolve(__dirname, "oci_config");
 
 const configContent = `
 [DEFAULT]
