@@ -15,4 +15,7 @@ DBConnect().catch((err) => {
   console.error("DB connect error in app.js:", err);
 });
 
+// Provide a default export (Express app is a callable handler) so serverless
+// platforms (like Vercel) which expect a default export get a valid handler.
+export default app;
 export { app };
