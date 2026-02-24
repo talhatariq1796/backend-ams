@@ -1,0 +1,7 @@
+
+[DEFAULT]
+user=ocid1.user.oc1..aaaaaaaa33ia63zm2nlkc6mtow3imbenqbnd7wrx3lbhxidqi47fs5r52f3a
+fingerprint=2c:8c:3e:e8:44:9a:34:e0:26:5f:07:f5:c1:73:b5:48
+key_file=/Users/mac/Documents/wb_projects/be-ams/src/storage/oci_api_key.pem
+tenancy=ocid1.tenancy.oc1..aaaaaaaapxsjg235bvlblqzjgr6ukffefvt6dskbx55e4liy4pmtqajikkoa
+region=ap-mumbai-1
