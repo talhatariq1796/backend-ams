@@ -37,13 +37,13 @@ possiblePaths.push(
 );
 
 // Filter out any falsy entries
-possiblePaths = possiblePaths.filter(Boolean);
+const pathsToTry = possiblePaths.filter(Boolean);
 
 let firebaseInitialized = false;
 
 // Only initialize if not already initialized
 if (admin.apps.length === 0) {
-  for (const serviceAccountPath of possiblePaths) {
+  for (const serviceAccountPath of pathsToTry) {
     try {
       let serviceAccount;
 
@@ -92,7 +92,7 @@ if (admin.apps.length === 0) {
       " - FIREBASE_SERVICE_ACCOUNT_BASE64 (base64-encoded JSON)",
       " - FIREBASE_SERVICE_ACCOUNT_PATH (path to JSON file)",
       "Tried paths:",
-      JSON.stringify(possiblePaths),
+      JSON.stringify(pathsToTry),
     ].join("\n");
     console.error(msg);
     // Throw to make the failure explicit in serverless environments (helps Vercel logs)
