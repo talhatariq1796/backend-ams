@@ -52,7 +52,7 @@ const PORT = process.env.PORT || 8000;
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: [process.env.LOCAL_FRONTEND_URL, process.env.LIVE_FRONTEND_URL],
+    origin: [process.env.LOCAL_FRONTEND_URL, process.env.LIVE_FRONTEND_URL, "https://ams-test1.netlify.app/"],
     credentials: true,
   },
 });
@@ -74,7 +74,7 @@ io.on("connection", (socket) => {
 
 app.use(
   cors({
-    origin: [process.env.LOCAL_FRONTEND_URL, process.env.LIVE_FRONTEND_URL],
+    origin: [process.env.LOCAL_FRONTEND_URL, process.env.LIVE_FRONTEND_URL, "https://ams-test1.netlify.app/"],
     credentials: true,
   }),
 );

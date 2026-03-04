@@ -36,7 +36,7 @@ import cors from "cors";
 // Setup CORS
 app.use(
   cors({
-    origin: [process.env.LOCAL_FRONTEND_URL, process.env.LIVE_FRONTEND_URL],
+    origin: [process.env.LOCAL_FRONTEND_URL, process.env.LIVE_FRONTEND_URL, "https://ams-test1.netlify.app/"],
     credentials: true,
   }),
 );
