@@ -64,15 +64,28 @@ export const RegisterUserService = async (userData) => {
   if (address.length < 5) {
     throw new AppError("Address must be at least 5 characters long.", 400);
   }
-  const existingUser = await Users.findOne({
-    email: { $regex: new RegExp("^" + email + "$", "i") },
-  });
-  const totalUsers = await Users.countDocuments();
-  if (existingUser) {
-    throw new AppError("User already exists", 400);
+  // Get company_id from userData (must be provided by the admin)
+  const companyId = userData.company_id;
+
+  if (!companyId) {
+    throw new AppError("Company ID is required for user registration", 400);
   }
 
-  const lastUser = await Users.findOne({})
+  // Check if email already exists within the same company
+  const existingUser = await Users.findOne({
+    company_id: companyId,
+    email: { $regex: new RegExp("^" + email + "$", "i") },
+  });
+
+  if (existingUser) {
+    throw new AppError(
+      "User with this email already exists in your company",
+      400
+    );
+  }
+
+  // Get next employee ID within the same company
+  const lastUser = await Users.findOne({ company_id: companyId })
     .sort({ employee_id: -1 })
     .collation({ locale: "en_US", numericOrdering: true });
 
@@ -84,6 +97,7 @@ export const RegisterUserService = async (userData) => {
 
   const hashedPassword = await bcrypt.hash(password, 10);
   const newUser = new Users({
+    company_id: companyId, // Add company_id for tenant isolation
     first_name,
     last_name,
     email: email.toLowerCase(),
@@ -114,7 +128,11 @@ export const RegisterUserService = async (userData) => {
     }
     const userResponse = newUser.toObject();
     delete userResponse.password;
-    await InitializeLeaveStatsForUser(newUser._id, new Date().getFullYear()); //updated leave stats
+    await InitializeLeaveStatsForUser(
+      newUser._id,
+      new Date().getFullYear(),
+      companyId
+    ); //updated leave stats
 
     return userResponse;
   } catch (error) {
@@ -147,6 +165,14 @@ export const LoginUserService = async ({ email, password, fcmToken }) => {
       throw new AppError(
         "Your account is inactive. Please contact admin.",
         403,
+      );
+    }
+
+    // Check if user has company_id (required for multi-tenant)
+    if (!user.company_id && !user.is_super_admin) {
+      throw new AppError(
+        "Your account is not associated with a company. Please contact admin for assistance.",
+        403
       );
     }
 
@@ -183,6 +209,8 @@ export const LoginUserService = async ({ email, password, fcmToken }) => {
       custom_working_hours: user.custom_working_hours,
       is_active: user.is_active,
       employee_id: user.employee_id,
+      company_id: user.company_id, // Add company_id for tenant isolation
+      is_super_admin: user.is_super_admin, // Add super admin flag
     };
 
     const access_tokenDuration = 24 * 60 * 60 * 60 * 3;
@@ -513,8 +541,12 @@ export const FetchEmployeesService = async ({
   };
 };
 
-export const FetchAllUsersService = async () => {
-  const users = await Users.find().select("-password");
+export const FetchAllUsersService = async (companyId = null) => {
+  // Super admins can fetch all users across all companies
+  // Regular admins can only fetch users from their company
+  const query = companyId ? { company_id: companyId } : {};
+
+  const users = await Users.find(query).select("-password");
   return users;
 };
 

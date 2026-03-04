@@ -2,18 +2,40 @@
 import Queue from "bull";
 import LeaveStats from "../models/leaveStats.model.js";
 import Users from "../models/user.model.js";
-import OfficeConfig from "../models/config.model.js";
+import CompanyConfigs from "../models/config.model.js";
+import Company from "../models/company.model.js";
 
 export const leaveSyncQueue = new Queue("leave-sync");
 
 // 👇 Process the queue
 leaveSyncQueue.process(async (job) => {
-  const { year, updatedTypes } = job.data;
+  const { year, updatedTypes, companyId } = job.data;
 
-  const config = await OfficeConfig.findOne();
-  if (!config) return;
+  // If companyId is provided, process for that company only
+  if (companyId) {
+    await processCompanySync(companyId, year, updatedTypes);
+    return;
+  }
+
+  // Otherwise process for all active companies
+  const companies = await Company.find({ is_active: true, status: "approved" });
+  
+  for (const company of companies) {
+    await processCompanySync(company._id.toString(), year, updatedTypes);
+  }
+});
+
+async function processCompanySync(companyId, year, updatedTypes) {
+  const config = await CompanyConfigs.findOne({ company_id: companyId });
+  if (!config) {
+    console.log(`⚠️  No config found for company ${companyId}`);
+    return;
+  }
+
+  console.log(`🔄 Processing leave sync for company: ${companyId}`);
 
   const allUsers = await Users.find({
+    company_id: companyId,
     is_active: true,
     designation: { $exists: true },
   }).select("_id designation");
@@ -24,7 +46,11 @@ leaveSyncQueue.process(async (job) => {
     const type = isBusiness(user.designation) ? "business" : "general";
     if (!updatedTypes.includes(type)) continue;
 
-    const stats = await LeaveStats.findOne({ user: user._id, year });
+    const stats = await LeaveStats.findOne({ 
+      company_id: companyId,
+      user: user._id, 
+      year 
+    });
     if (!stats) continue;
 
     const typeConfig =
@@ -44,4 +70,6 @@ leaveSyncQueue.process(async (job) => {
     stats.last_updated = new Date();
     await stats.save();
   }
-});
+
+  console.log(`✅ Completed leave sync for company: ${companyId}`);
+}

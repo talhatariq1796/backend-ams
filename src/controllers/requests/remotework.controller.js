@@ -10,6 +10,7 @@ import { AppResponse } from "../../middlewares/error.middleware.js";
 import { createLogsAndNotification } from "../../utils/logNotification.js";
 import { NOTIFICATION_TYPES } from "../../constants/notificationTypes.js";
 import RecentRequests from "../../models/requests/recentRequest.model.js";
+import { getCompanyId } from "../../utils/company.util.js";
 
 export const RequestRemoteWork = async (req, res) => {
   try {
@@ -18,13 +19,15 @@ export const RequestRemoteWork = async (req, res) => {
       throw new AppError("Request body is missing.", 400);
     }
 
-    const request = await RemoteWorkService.RequestRemoteWorkService({
+    const request = await RemoteWorkService.RequestRemoteWorkService(req, {
       ...req.body,
       user_id: req.user._id,
     });
 
     if (request) {
+      const companyId = getCompanyId(req);
       await RecentRequests.create({
+        company_id: companyId || undefined,
         userId: req.user._id,
         type: "remoteWork",
         referenceId: request._id,
@@ -39,7 +42,7 @@ export const RequestRemoteWork = async (req, res) => {
       if (req.user.role === "employee") {
         const team = await Teams.findById(req.user.team).populate("leads");
 
-        const leads = (team && team.leads) ? team.leads : [];
+        const leads = team && team.leads ? team.leads : [];
         if (leads.length > 0) {
           notification_to = leads[0]._id;
           if (leads.length > 1) {
@@ -51,7 +54,7 @@ export const RequestRemoteWork = async (req, res) => {
         notifyAdmins = true;
       }
 
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         notification_to,
         moreUsers,
@@ -62,7 +65,7 @@ export const RequestRemoteWork = async (req, res) => {
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 201,
       message: "Remote work requests submitted successfully",
@@ -70,7 +73,7 @@ export const RequestRemoteWork = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -86,9 +89,13 @@ export const GetApprovedRemoteWorkByDate = async (req, res) => {
       throw new AppError("User ID and date are required.", 400);
     }
     const remoteWork =
-      await RemoteWorkService.GetApprovedRemoteWorkByDateService(user_id, date);
+      await RemoteWorkService.GetApprovedRemoteWorkByDateService(
+        req,
+        user_id,
+        date,
+      );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Approved request retrieved successfully",
@@ -96,9 +103,9 @@ export const GetApprovedRemoteWorkByDate = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
-      statusCode: error.statusCode,
+      statusCode: error.statusCode || 500,
       message: error.message,
       success: false,
     });
@@ -117,12 +124,13 @@ export const EditOwnRemoteWorkRequest = async (req, res) => {
 
     const updatedRequest =
       await RemoteWorkService.EditOwnRemoteWorkRequestService(
+        req,
         req.user._id,
         request_id,
-        updateData
+        updateData,
       );
 
-    await createLogsAndNotification({
+    createLogsAndNotification({
       notification_by: req.user._id,
       notification_to: null,
       type: NOTIFICATION_TYPES.REMOTE_WORK_REQUEST,
@@ -130,7 +138,7 @@ export const EditOwnRemoteWorkRequest = async (req, res) => {
       notifyAdmins: false,
     });
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Remote work request updated successfully",
@@ -138,7 +146,7 @@ export const EditOwnRemoteWorkRequest = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -157,15 +165,16 @@ export const UpdateRemoteWorkStatus = async (req, res) => {
     if (status === "rejected" && !rejection_reason) {
       throw new AppError(
         "Rejection reason is required when rejecting a request.",
-        400
+        400,
       );
     }
 
     const response = await RemoteWorkService.UpdateRemoteWorkStatusService(
+      req,
       request_id,
       status,
       adminName,
-      rejection_reason
+      rejection_reason,
     );
 
     if (response) {
@@ -184,7 +193,7 @@ export const UpdateRemoteWorkStatus = async (req, res) => {
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: `Remote work request ${status} successfully`,
@@ -192,9 +201,9 @@ export const UpdateRemoteWorkStatus = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
-      statusCode: error.statusCode,
+      statusCode: error.statusCode || 500,
       message: error.message,
       success: false,
     });
@@ -206,18 +215,21 @@ export const DeleteRemoteWorkRequest = async (req, res) => {
     const { request_id } = req.params;
 
     const response = await RemoteWorkService.DeleteRemoteWorkRequestService(
+      req,
       req.user._id,
       request_id,
-      req.user.role
+      req.user.role,
     );
 
     if (response) {
+      const companyId = getCompanyId(req);
       await RecentRequests.deleteOne({
+        ...(companyId && { company_id: companyId }),
         referenceId: request_id,
         type: "remoteWork",
       });
 
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         notification_to: req.user.role === "admin" ? response.user_id : null,
         type: NOTIFICATION_TYPES.REMOTE_WORK_REQUEST,
@@ -225,7 +237,7 @@ export const DeleteRemoteWorkRequest = async (req, res) => {
         notifyAdmins: false,
       });
     }
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Remote work request deleted successfully",
@@ -233,9 +245,9 @@ export const DeleteRemoteWorkRequest = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
-      statusCode: error.statusCode,
+      statusCode: error.statusCode || 500,
       message: error.message,
       success: false,
     });
@@ -259,7 +271,7 @@ export const GetRemoteWorkRequests = async (req, res) => {
       department_id,
     } = req.query;
 
-    const requests = await RemoteWorkService.GetRemoteWorkRequestsService({
+    const requests = await RemoteWorkService.GetRemoteWorkRequestsService(req, {
       userInfo: req.user, // Pass user info
       view_scope,
       filter_type,
@@ -273,7 +285,7 @@ export const GetRemoteWorkRequests = async (req, res) => {
       department_id,
     });
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Remote work requests retrieved successfully",
@@ -281,7 +293,7 @@ export const GetRemoteWorkRequests = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Failed to fetch remote work requests",
@@ -293,10 +305,11 @@ export const GetRemoteWorkRequests = async (req, res) => {
 export const GetPendingRemoteWorkCount = async (req, res, next) => {
   try {
     const result = await RemoteWorkService.GetPendingRemoteWorkCountService(
-      req.user
+      req,
+      req.user,
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Pending remote work count fetched successfully",
@@ -324,6 +337,7 @@ export const AssignRemoteWorkToUsers = async (req, res) => {
     const admin_name = req.user.first_name + " " + req.user.last_name;
 
     const result = await RemoteWorkService.AssignRemoteWorkToUsersService(
+      req,
       userIds,
       {
         start_date,
@@ -331,14 +345,14 @@ export const AssignRemoteWorkToUsers = async (req, res) => {
         total_days,
         reason,
         admin_name,
-      }
+      },
     );
 
     const allSkipped = result.every(
-      (r) => r.status === "skipped_already_approved"
+      (r) => r.status === "skipped_already_approved",
     );
     const allAssigned = result.every(
-      (r) => r.status === "created_and_approved"
+      (r) => r.status === "created_and_approved",
     );
 
     let message = "";
@@ -354,7 +368,7 @@ export const AssignRemoteWorkToUsers = async (req, res) => {
 
     const createdAny = result.some((r) => r.status === "created_and_approved");
     if (createdAny) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         moreUsers: userIds,
         type: NOTIFICATION_TYPES.REMOTE_WORK_REQUEST,
@@ -363,7 +377,7 @@ export const AssignRemoteWorkToUsers = async (req, res) => {
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message,
@@ -371,7 +385,7 @@ export const AssignRemoteWorkToUsers = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Something went wrong",
@@ -393,9 +407,10 @@ export const AdminUpdateRemoteWorkRequest = async (req, res) => {
 
     const updatedRequest =
       await RemoteWorkService.AdminUpdateRemoteWorkRequestService(
+        req,
         request_id,
         updateData,
-        adminName
+        adminName,
       );
 
     // Create specific message based on what was updated
@@ -416,7 +431,7 @@ export const AdminUpdateRemoteWorkRequest = async (req, res) => {
       notifyAdmins: false,
     });
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Remote work request updated successfully",
@@ -424,7 +439,7 @@ export const AdminUpdateRemoteWorkRequest = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,

@@ -5,8 +5,118 @@ import { CheckValidation } from "../utils/validation.util.js";
 import Teams from "../models/team.model.js";
 import Departments from "../models/department.model.js";
 import mongoose from "mongoose";
+import { getCompanyId } from "../utils/company.util.js";
+
+/**
+ * Check if two visibility arrays have overlapping departments
+ * @param {Array} visibility1 - First visibility array
+ * @param {Array} visibility2 - Second visibility array
+ * @returns {boolean} - True if there's an overlap, false otherwise
+ */
+const hasVisibilityOverlap = (visibility1, visibility2) => {
+  // Convert both arrays to sets of string representations for comparison
+  const set1 = new Set(
+    visibility1.map((v) =>
+      v === "public" ? "public" : v.toString()
+    )
+  );
+  const set2 = new Set(
+    visibility2.map((v) =>
+      v === "public" ? "public" : v.toString()
+    )
+  );
+
+  // Check for overlap
+  for (const item of set1) {
+    if (set2.has(item)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Compare two visibility arrays to check if they are equal
+ * @param {Array} visibility1 - First visibility array
+ * @param {Array} visibility2 - Second visibility array
+ * @returns {boolean} - True if arrays are equal, false otherwise
+ */
+const areVisibilityArraysEqual = (visibility1, visibility2) => {
+  if (visibility1.length !== visibility2.length) {
+    return false;
+  }
+
+  const set1 = new Set(
+    visibility1.map((v) =>
+      v === "public" ? "public" : v.toString()
+    )
+  );
+  const set2 = new Set(
+    visibility2.map((v) =>
+      v === "public" ? "public" : v.toString()
+    )
+  );
+
+  if (set1.size !== set2.size) {
+    return false;
+  }
+
+  for (const item of set1) {
+    if (!set2.has(item)) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
+ * Check if a document with the same name already exists for the same department(s)
+ * @param {ObjectId} companyId - Company ID
+ * @param {String} documentName - Document name to check
+ * @param {Array} visibility - Visibility array (departments or "public")
+ * @param {ObjectId} excludeDocumentId - Optional document ID to exclude from check (for updates)
+ * @returns {Promise<boolean>} - True if duplicate exists, false otherwise
+ */
+const checkDuplicateDocument = async (
+  companyId,
+  documentName,
+  visibility,
+  excludeDocumentId = null
+) => {
+  // Escape special regex characters in document name
+  const escapedName = documentName.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  
+  // Find all documents with the same name (case-insensitive) in the same company
+  const query = {
+    company_id: companyId,
+    document_name: { $regex: new RegExp(`^${escapedName}$`, "i") },
+  };
+
+  if (excludeDocumentId) {
+    query._id = { $ne: excludeDocumentId };
+  }
+
+  const existingDocs = await Documents.find(query);
+
+  if (existingDocs.length === 0) {
+    return false; // No duplicates found
+  }
+
+  // Check if any existing document has overlapping visibility
+  for (const existingDoc of existingDocs) {
+    if (hasVisibilityOverlap(existingDoc.visibility, visibility)) {
+      return true; // Duplicate found with overlapping departments
+    }
+  }
+
+  return false; // No duplicates with overlapping departments
+};
 
 export const UploadDocumentService = async (req) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const { document_name, document_type, visibility, file_url } = req.body;
 
   const validationError = CheckValidation(
@@ -36,7 +146,19 @@ export const UploadDocumentService = async (req) => {
     throw new AppError("Visibility must be an array", 400);
   }
 
+  // Check for duplicate document with same name and overlapping departments
+  const isDuplicate = await checkDuplicateDocument(
+    companyId,
+    document_name,
+    finalVisibility
+  );
+
+  if (isDuplicate) {
+    throw new AppError("Document already exists", 400);
+  }
+
   const newDoc = await Documents.create({
+    company_id: companyId,
     document_name,
     document_type,
     visibility: finalVisibility,
@@ -47,28 +169,56 @@ export const UploadDocumentService = async (req) => {
   return newDoc;
 };
 
-export const UpdateDocumentService = async (id, updateBody) => {
-  const doc = await Documents.findById(id);
+export const UpdateDocumentService = async (req, id, updateBody) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const doc = await Documents.findOne({ _id: id, company_id: companyId });
   if (!doc) throw new AppError("Document not found", 404);
 
-  doc.document_name = updateBody.document_name || doc.document_name;
-  doc.document_type = updateBody.document_type || doc.document_type;
+  const newDocumentName = updateBody.document_name || doc.document_name;
+  let newVisibility = doc.visibility;
 
   if (updateBody.visibility) {
     if (!Array.isArray(updateBody.visibility)) {
       throw new AppError("Visibility must be an array", 400);
     }
-    doc.visibility = updateBody.visibility.map((v) =>
+    newVisibility = updateBody.visibility.map((v) =>
       v === "public" ? "public" : new mongoose.Types.ObjectId(v)
     );
   }
+
+  // Check for duplicate document with same name and overlapping departments
+  // Only check if document name or visibility has changed
+  if (
+    newDocumentName !== doc.document_name ||
+    !areVisibilityArraysEqual(newVisibility, doc.visibility)
+  ) {
+    const isDuplicate = await checkDuplicateDocument(
+      companyId,
+      newDocumentName,
+      newVisibility,
+      id // Exclude current document from duplicate check
+    );
+
+    if (isDuplicate) {
+      throw new AppError("Document already exists", 400);
+    }
+  }
+
+  doc.document_name = newDocumentName;
+  doc.document_type = updateBody.document_type || doc.document_type;
+  doc.visibility = newVisibility;
 
   await doc.save();
   return doc;
 };
 
-export const DeleteDocumentService = async (id) => {
-  const doc = await Documents.findById(id);
+export const DeleteDocumentService = async (req, id) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const doc = await Documents.findOne({ _id: id, company_id: companyId });
   if (!doc) throw new AppError("Document not found", 404);
 
   try {
@@ -77,10 +227,14 @@ export const DeleteDocumentService = async (id) => {
     console.warn("File deletion warning:", err.message);
   }
 
-  await Documents.findByIdAndDelete(id);
+  await Documents.findOneAndDelete({ _id: id, company_id: companyId });
 };
 
-export const FetchDocumentsService = async (user, query) => {
+export const FetchDocumentsService = async (req, query) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
   const {
     visibility,
     document_type,
@@ -90,7 +244,7 @@ export const FetchDocumentsService = async (user, query) => {
     limit = 10,
   } = query;
 
-  const filters = {};
+  const filters = { company_id: companyId };
 
   if (document_type && document_type !== "all documents") {
     filters.document_type = document_type;
@@ -118,7 +272,10 @@ export const FetchDocumentsService = async (user, query) => {
       }
     }
   } else {
-    const userTeam = await Teams.findById(user.team);
+    const userTeam = await Teams.findOne({
+      _id: user.team,
+      company_id: companyId,
+    });
     if (!userTeam) throw new AppError("User team not found", 404);
 
     const departmentId = userTeam.department?.toString();
@@ -144,9 +301,10 @@ export const FetchDocumentsService = async (user, query) => {
 
       const deptIds = doc.visibility.filter((v) => v !== "public");
       if (deptIds.length > 0) {
-        const depts = await Departments.find({ _id: { $in: deptIds } }).select(
-          "name"
-        );
+        const depts = await Departments.find({
+          company_id: companyId,
+          _id: { $in: deptIds },
+        }).select("name");
         departmentNames.push(...depts.map((d) => d.name));
       }
 

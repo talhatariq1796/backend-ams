@@ -8,13 +8,17 @@ import moment from "moment";
 import mongoose from "mongoose";
 import User from "../../models/user.model.js";
 import Teams from "../../models/team.model.js";
-import OfficeConfigs from "../../models/config.model.js";
+import CompanyConfigs from "../../models/config.model.js";
 import dayjs from "dayjs";
 import { getPagination } from "../../utils/pagination.util.js";
 import { AdjustLeaveStatsForUser } from "../../utils/leaveStats.util.js";
 import { GetLeaveStatsService } from "../leaveStats.service.js";
+import { getCompanyId } from "../../utils/company.util.js";
 
-export const ApplyLeaveService = async (leaveData, requestingUser) => {
+export const ApplyLeaveService = async (req, leaveData, requestingUser) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   let {
     user,
     leave_type,
@@ -46,11 +50,12 @@ export const ApplyLeaveService = async (leaveData, requestingUser) => {
     );
   }
 
-  const userInfo = await User.findById(user);
+  const userInfo = await User.findOne({ _id: user, company_id: companyId });
   if (!userInfo) throw new AppError("User not found", 404);
 
   // 🔍 Check for overlapping active leaves (approved or pending only)
   const overlappingLeaves = await Leave.find({
+    company_id: companyId,
     user,
     status: { $in: ["approved", "pending"] },
     $or: [
@@ -234,15 +239,17 @@ export const ApplyLeaveService = async (leaveData, requestingUser) => {
 
   let substituteDetails = null;
   if (substitute) {
-    substituteDetails = await User.findById(substitute).select(
-      "first_name last_name",
-    );
+    substituteDetails = await User.findOne({
+      _id: substitute,
+      company_id: companyId,
+    }).select("first_name last_name");
     if (!substituteDetails) {
       throw new AppError("Substitute user not found", 200);
     }
   }
 
   const newLeave = new Leave({
+    company_id: companyId,
     user: userInfo._id,
     leave_type,
     start_date,
@@ -285,6 +292,7 @@ export const ApplyLeaveService = async (leaveData, requestingUser) => {
 
       if (day !== 0 && day !== 6) {
         attendanceEntries.push({
+          company_id: companyId,
           user: userInfo._id,
           date: currentDate,
           status: "leave",
@@ -397,16 +405,20 @@ export const ApplyLeaveService = async (leaveData, requestingUser) => {
 };
 
 export const UpdateLeaveStatusService = async (
+  req,
   leave_id,
   status,
   userInfo,
   rejection_reason = null,
 ) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   if (!["approved", "rejected"].includes(status)) {
     throw new AppError("Invalid status. Must be 'approved' or 'rejected'", 400);
   }
 
-  const leave = await Leave.findById(leave_id);
+  const leave = await Leave.findOne({ _id: leave_id, company_id: companyId });
   if (!leave) throw new AppError("Leave request not found", 400);
 
   if (leave.status !== "pending") {
@@ -423,9 +435,10 @@ export const UpdateLeaveStatusService = async (
     }
 
     // ✅ Fetch all teams where this user is a lead
-    const teamsLed = await Teams.find({ leads: userInfo._id }).select(
-      "members",
-    );
+    const teamsLed = await Teams.find({
+      company_id: companyId,
+      leads: userInfo._id,
+    }).select("members");
 
     if (!teamsLed.length) {
       throw new AppError("You are not leading any team", 403);
@@ -452,9 +465,10 @@ export const UpdateLeaveStatusService = async (
     }
 
     // ✅ Fetch all teams where this user is a manager
-    const teamsManaged = await Teams.find({ managers: userInfo._id }).select(
-      "members",
-    );
+    const teamsManaged = await Teams.find({
+      company_id: companyId,
+      managers: userInfo._id,
+    }).select("members");
 
     if (!teamsManaged.length) {
       throw new AppError("You are not managing any team", 403);
@@ -690,6 +704,7 @@ export const UpdateLeaveStatusService = async (
 
       if (day !== 0 && day !== 6 && !existingDates.has(dateKey)) {
         attendanceEntries.push({
+          company_id: companyId,
           user_id: userObjectId,
           date: currentDate,
           status: leave.is_half_day ? "half-day" : "leave",
@@ -785,8 +800,14 @@ export const UpdateLeaveStatusService = async (
   };
 };
 
-export const EditLeaveService = async (leave_id, editData, userInfo) => {
-  const leave = await Leave.findById(leave_id).populate("user", "_id");
+export const EditLeaveService = async (req, leave_id, editData, userInfo) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const leave = await Leave.findOne({
+    _id: leave_id,
+    company_id: companyId,
+  }).populate("user", "_id");
   if (!leave) throw new AppError("Leave request not found", 404);
 
   // Role and status checks
@@ -911,11 +932,13 @@ export const EditLeaveService = async (leave_id, editData, userInfo) => {
       const attendanceEntries = [];
       const current = moment(leave.start_date);
       const end = moment(leave.end_date);
+      const leaveCompanyId = leave.company_id || companyId;
 
       while (current <= end) {
         const day = current.day();
         if (day !== 0 && day !== 6) {
           attendanceEntries.push({
+            company_id: leaveCompanyId,
             user_id: leave.user._id,
             date: current.toDate(),
             status: "leave",
@@ -1020,8 +1043,11 @@ export const EditLeaveService = async (leave_id, editData, userInfo) => {
   return leave;
 };
 
-export const DeleteLeaveService = async (user, leave_id) => {
-  const leave = await Leave.findById(leave_id);
+export const DeleteLeaveService = async (req, user, leave_id) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const leave = await Leave.findOne({ _id: leave_id, company_id: companyId });
   if (!leave) {
     throw new AppError("Leave request not found", 400);
   }
@@ -1071,11 +1097,12 @@ export const DeleteLeaveService = async (user, leave_id) => {
     "restore",
   );
 
-  await Leave.findByIdAndDelete(leave_id);
+  await Leave.findOneAndDelete({ _id: leave_id, company_id: companyId });
   return true;
 };
 
 export const GetAllLeaveRequestsService = async (
+  req,
   userInfo,
   view_scope = "self",
   filter_type,
@@ -1090,7 +1117,10 @@ export const GetAllLeaveRequestsService = async (
   limit = 10,
 ) => {
   try {
-    let filter = {};
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
+    let filter = { company_id: companyId };
 
     // Leave type filtering
     if (leave_type) {
@@ -1194,6 +1224,7 @@ export const GetAllLeaveRequestsService = async (
     } else if (userInfo.role === "teamLead") {
       // FIX: Find all teams where this user is the lead
       const teamsLedByUser = await Teams.find({
+        company_id: companyId,
         leads: userInfo._id,
       }).select("members");
 
@@ -1414,13 +1445,17 @@ export const GetAllLeaveRequestsService = async (
   }
 };
 
-export const GetAvailableLeaveTypesService = async (userInfo) => {
-  const userData = await User.findById(userInfo._id).select(
-    "gender employment_status designation",
-  );
+export const GetAvailableLeaveTypesService = async (req, userInfo) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const userData = await User.findOne({
+    _id: userInfo._id,
+    company_id: companyId,
+  }).select("gender employment_status designation");
   if (!userData) throw new AppError("User not found", 404);
 
-  const officeConfig = await OfficeConfigs.findOne();
+  const officeConfig = await CompanyConfigs.findOne({ company_id: companyId });
   if (
     !officeConfig ||
     (!officeConfig.general_leave_types && !officeConfig.business_leave_types)
@@ -1460,16 +1495,20 @@ export const GetAvailableLeaveTypesService = async (userInfo) => {
   return leaveTypes;
 };
 
-export const GetPendingLeavesCountService = async (user) => {
-  const filter = { status: "pending" };
+export const GetPendingLeavesCountService = async (req, user) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const filter = { company_id: companyId, status: "pending" };
 
   if (user.role === "admin") {
     // Admin → all pending leaves
   } else if (user.role === "manager") {
     // Manager → pending leaves from their managed teams
-    const teamsManagedByUser = await Teams.find({ managers: user._id }).select(
-      "members",
-    );
+    const teamsManagedByUser = await Teams.find({
+      company_id: companyId,
+      managers: user._id,
+    }).select("members");
 
     let memberIds = [];
     teamsManagedByUser.forEach((team) => {
@@ -1486,9 +1525,10 @@ export const GetPendingLeavesCountService = async (user) => {
 
     filter.user = { $in: memberIds };
   } else if (user.role === "teamLead") {
-    const teamsLedByUser = await Teams.find({ leads: user._id }).select(
-      "members",
-    );
+    const teamsLedByUser = await Teams.find({
+      company_id: companyId,
+      lead: user._id,
+    }).select("members");
 
     let memberIds = [];
     teamsLedByUser.forEach((team) => {

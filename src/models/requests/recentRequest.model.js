@@ -2,6 +2,11 @@ import mongoose from "mongoose";
 
 const RecentRequestSchema = new mongoose.Schema(
   {
+    company_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Companies",
+      index: true,
+    },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Users",

@@ -5,11 +5,14 @@ import AppError from "../../middlewares/error.middleware.js";
 import mongoose from "mongoose";
 import Leave from "../../models/requests/leave.model.js";
 import Teams from "../../models/team.model.js";
+import { getCompanyId } from "../../utils/company.util.js";
 
-export const RequestRemoteWorkService = async (body) => {
+export const RequestRemoteWorkService = async (req, body) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
   const validationError = CheckValidation(
     ["user_id", "start_date", "end_date", "reason"],
-    { body }
+    { body },
   );
   if (validationError) {
     throw new AppError(validationError, 400);
@@ -22,7 +25,8 @@ export const RequestRemoteWorkService = async (body) => {
   }
 
   const overlappingLeave = await Leave.find({
-    user_id,
+    company_id: companyId,
+    user: user_id,
     status: { $in: ["approved", "pending"] },
     $or: [
       {
@@ -34,11 +38,12 @@ export const RequestRemoteWorkService = async (body) => {
   if (overlappingLeave.length > 0) {
     throw new AppError(
       "You already have leave applied for the selected date range.",
-      400
+      400,
     );
   }
 
   const overlappingRemoteWork = await RemoteWork.find({
+    company_id: companyId,
     user_id,
     status: { $in: ["approved", "pending"] },
     $or: [
@@ -51,7 +56,7 @@ export const RequestRemoteWorkService = async (body) => {
   if (overlappingRemoteWork.length > 0) {
     throw new AppError(
       "You already have a remote work request for the selected date range.",
-      400
+      400,
     );
   }
 
@@ -60,6 +65,7 @@ export const RequestRemoteWorkService = async (body) => {
   // );
 
   const newRequest = new RemoteWork({
+    company_id: companyId,
     user_id,
     start_date,
     end_date,
@@ -72,9 +78,17 @@ export const RequestRemoteWorkService = async (body) => {
   return newRequest;
 };
 
-export const GetApprovedRemoteWorkByDateService = async (user_id, date) => {
+export const GetApprovedRemoteWorkByDateService = async (
+  req,
+  user_id,
+  date,
+) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const targetDate = new Date(date);
   const remoteWork = await RemoteWork.findOne({
+    company_id: companyId,
     user_id,
     status: "approved",
     start_date: { $lte: targetDate },
@@ -84,11 +98,18 @@ export const GetApprovedRemoteWorkByDateService = async (user_id, date) => {
 };
 
 export const EditOwnRemoteWorkRequestService = async (
+  req,
   user_id,
   request_id,
-  updateData
+  updateData,
 ) => {
-  const request = await RemoteWork.findById(request_id);
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const request = await RemoteWork.findOne({
+    _id: request_id,
+    company_id: companyId,
+  });
   if (!request) throw new AppError("Remote work request not found", 404);
 
   if (request.user_id.toString() !== user_id.toString()) {
@@ -111,7 +132,7 @@ export const EditOwnRemoteWorkRequestService = async (
   if (Object.keys(sanitizedUpdate).length === 0) {
     throw new AppError(
       "Only start_date, end_date, and reason can be updated",
-      400
+      400,
     );
   }
 
@@ -138,25 +159,74 @@ export const EditOwnRemoteWorkRequestService = async (
       Math.ceil((newEndDate - newStartDate) / (1000 * 60 * 60 * 24)) + 1;
   }
 
-  await checkForDateConflicts(user_id, newStartDate, newEndDate, request_id);
-
-  const updatedRequest = await RemoteWork.findByIdAndUpdate(
+  await checkForDateConflicts(
+    companyId,
+    user_id,
+    newStartDate,
+    newEndDate,
     request_id,
+  );
+
+  const updatedRequest = await RemoteWork.findOneAndUpdate(
+    { _id: request_id, company_id: companyId },
     sanitizedUpdate,
-    { new: true, runValidators: true }
+    { new: true, runValidators: true },
   );
 
   return updatedRequest;
 };
 
 export const UpdateRemoteWorkStatusService = async (
+  req,
   request_id,
   status,
   adminName,
-  rejection_reason
+  rejection_reason,
 ) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   if (!["approved", "rejected"].includes(status)) {
     throw new AppError("Request already processed.", 400);
+  }
+
+  const userInfo = req.user;
+  let request = await RemoteWork.findOne({
+    _id: request_id,
+    company_id: companyId,
+    status: "pending",
+  });
+  if (!request) {
+    throw new AppError("Request not found or already processed", 404);
+  }
+
+  // Role-based approval scope: team lead can only approve/reject their team members
+  if (userInfo && userInfo.role === "teamLead") {
+    const teamsLed = await Teams.find({
+      company_id: companyId,
+      lead: userInfo._id,
+    }).select("members");
+    if (!teamsLed.length) {
+      throw new AppError("You are not leading any team", 403);
+    }
+    const allMemberIds = teamsLed.flatMap((t) =>
+      (t.members || []).map((m) => m.toString()),
+    );
+    if (!allMemberIds.includes(request.user_id.toString())) {
+      throw new AppError(
+        "You can only approve or reject remote work requests of your team members",
+        403,
+      );
+    }
+  } else if (
+    userInfo &&
+    userInfo.role !== "admin" &&
+    !userInfo.is_super_admin
+  ) {
+    throw new AppError(
+      "You are not authorized to approve or reject remote work requests",
+      403,
+    );
   }
 
   const updateFields = {
@@ -168,10 +238,10 @@ export const UpdateRemoteWorkStatusService = async (
     updateFields.rejection_reason = rejection_reason;
   }
 
-  let request = await RemoteWork.findOneAndUpdate(
-    { _id: request_id, status: "pending" },
+  request = await RemoteWork.findOneAndUpdate(
+    { _id: request_id, company_id: companyId, status: "pending" },
     updateFields,
-    { new: true }
+    { new: true },
   );
 
   if (!request) {
@@ -207,11 +277,18 @@ export const UpdateRemoteWorkStatusService = async (
 };
 
 export const DeleteRemoteWorkRequestService = async (
+  req,
   user_id,
   request_id,
-  user_role
+  user_role,
 ) => {
-  const request = await RemoteWork.findById(request_id);
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const request = await RemoteWork.findOne({
+    _id: request_id,
+    company_id: companyId,
+  });
 
   if (!request) {
     throw new AppError("Request not found", 400);
@@ -228,25 +305,31 @@ export const DeleteRemoteWorkRequestService = async (
     throw new AppError("Cannot delete request after approval/rejection", 400);
   }
 
-  await RemoteWork.findByIdAndDelete(request_id);
+  await RemoteWork.findOneAndDelete({ _id: request_id, company_id: companyId });
   return request;
 };
 
-export const GetRemoteWorkRequestsService = async ({
-  userInfo,
-  view_scope = "self",
-  filter_type,
-  start_date,
-  end_date,
-  status,
-  user_id,
-  page = 1,
-  limit = 10,
-  search = "",
-  department_id,
-}) => {
+export const GetRemoteWorkRequestsService = async (
+  req,
+  {
+    userInfo,
+    view_scope = "self",
+    filter_type,
+    start_date,
+    end_date,
+    status,
+    user_id,
+    page = 1,
+    limit = 10,
+    search = "",
+    department_id,
+  },
+) => {
   try {
-    const filter = {};
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
+    const filter = { company_id: companyId };
 
     // Role-based view_scope logic
     if (userInfo.role === "admin") {
@@ -276,7 +359,7 @@ export const GetRemoteWorkRequestsService = async ({
       teamsManagedByUser.forEach((team) => {
         if (team.members && team.members.length > 0) {
           teamMemberIds.push(
-            ...team.members.map((m) => new mongoose.Types.ObjectId(m))
+            ...team.members.map((m) => new mongoose.Types.ObjectId(m)),
           );
         }
       });
@@ -309,7 +392,8 @@ export const GetRemoteWorkRequestsService = async ({
     } else if (userInfo.role === "teamLead") {
       // FIX: Find all teams where this user is the lead
       const teamsLedByUser = await Teams.find({
-        leads: userInfo._id,
+        company_id: companyId,
+        lead: userInfo._id,
       }).select("members");
 
       if (!teamsLedByUser || teamsLedByUser.length === 0) {
@@ -321,7 +405,7 @@ export const GetRemoteWorkRequestsService = async ({
       teamsLedByUser.forEach((team) => {
         if (team.members && team.members.length > 0) {
           teamMemberIds.push(
-            ...team.members.map((m) => new mongoose.Types.ObjectId(m))
+            ...team.members.map((m) => new mongoose.Types.ObjectId(m)),
           );
         }
       });
@@ -355,7 +439,7 @@ export const GetRemoteWorkRequestsService = async ({
       if (view_scope !== "self") {
         throw new AppError(
           "Users can only view their own remote work requests",
-          403
+          403,
         );
       }
       filter.user_id = new mongoose.Types.ObjectId(userInfo._id);
@@ -366,7 +450,7 @@ export const GetRemoteWorkRequestsService = async ({
       const { startDate, endDate } = getDateRangeFromFilter(
         filter_type,
         start_date,
-        end_date
+        end_date,
       );
       filter.createdAt = { $gte: startDate, $lte: endDate };
     }
@@ -415,10 +499,11 @@ export const GetRemoteWorkRequestsService = async ({
     // Department filter
     if (department_id && mongoose.Types.ObjectId.isValid(department_id)) {
       const teamsInDept = await Teams.find({
+        company_id: companyId,
         department: department_id,
       }).select("members");
       const userIdsInDept = teamsInDept.flatMap((team) =>
-        team.members.map((m) => new mongoose.Types.ObjectId(m))
+        team.members.map((m) => new mongoose.Types.ObjectId(m)),
       );
 
       if (userIdsInDept.length === 0) {
@@ -439,7 +524,9 @@ export const GetRemoteWorkRequestsService = async ({
     // Search
     if (search.trim()) {
       // Escape special regex characters and search in concatenated full name
-      const escapedSearch = search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const escapedSearch = search
+        .trim()
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const searchRegex = new RegExp(escapedSearch, "i");
       pipeline.push({
         $match: {
@@ -498,7 +585,7 @@ export const GetRemoteWorkRequestsService = async ({
             team_name: 1,
           },
         },
-      }
+      },
     );
 
     const requests = await RemoteWork.aggregate(pipeline);
@@ -519,22 +606,25 @@ export const GetRemoteWorkRequestsService = async ({
   }
 };
 
-export const GetPendingRemoteWorkCountService = async (user) => {
-  const filter = { status: "pending" };
+export const GetPendingRemoteWorkCountService = async (req, user) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const filter = { company_id: companyId, status: "pending" };
 
   if (user.role === "admin") {
     // Admin → all
   } else if (user.role === "manager") {
     // Manager → pending requests from their managed teams
     const teamsManagedByUser = await Teams.find({ managers: user._id }).select(
-      "members"
+      "members",
     );
 
     let memberIds = [];
     teamsManagedByUser.forEach((team) => {
       if (team.members?.length) {
         memberIds.push(
-          ...team.members.map((id) => new mongoose.Types.ObjectId(id))
+          ...team.members.map((id) => new mongoose.Types.ObjectId(id)),
         );
       }
     });
@@ -545,15 +635,16 @@ export const GetPendingRemoteWorkCountService = async (user) => {
 
     filter.user_id = { $in: memberIds };
   } else if (user.role === "teamLead") {
-    const teamsLedByUser = await Teams.find({ leads: user._id }).select(
-      "members"
-    );
+    const teamsLedByUser = await Teams.find({
+      company_id: companyId,
+      lead: user._id,
+    }).select("members");
 
     let memberIds = [];
     teamsLedByUser.forEach((team) => {
       if (team.members?.length) {
         memberIds.push(
-          ...team.members.map((id) => new mongoose.Types.ObjectId(id))
+          ...team.members.map((id) => new mongoose.Types.ObjectId(id)),
         );
       }
     });
@@ -572,14 +663,19 @@ export const GetPendingRemoteWorkCountService = async (user) => {
 };
 
 export const AssignRemoteWorkToUsersService = async (
+  req,
   userIds,
-  { start_date, end_date, total_days, reason, admin_name }
+  { start_date, end_date, total_days, reason, admin_name },
 ) => {
   try {
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
     const results = [];
 
     for (const userId of userIds) {
       const alreadyApproved = await RemoteWork.exists({
+        company_id: companyId,
         user_id: userId,
         status: "approved",
         start_date: { $lte: new Date(end_date) },
@@ -596,6 +692,7 @@ export const AssignRemoteWorkToUsersService = async (
       }
 
       const conflictingPendingRequests = await RemoteWork.find({
+        company_id: companyId,
         user_id: userId,
         status: "pending",
         start_date: { $lte: new Date(end_date) },
@@ -603,14 +700,18 @@ export const AssignRemoteWorkToUsersService = async (
       });
 
       for (const request of conflictingPendingRequests) {
-        await RemoteWork.findByIdAndUpdate(request._id, {
-          status: "rejected",
-          rejection_reason: "Rejected by admin due to override",
-          action_taken_by: admin_name,
-        });
+        await RemoteWork.findOneAndUpdate(
+          { _id: request._id, company_id: companyId },
+          {
+            status: "rejected",
+            rejection_reason: "Rejected by admin due to override",
+            action_taken_by: admin_name,
+          },
+        );
       }
 
       const request = await RemoteWork.create({
+        company_id: companyId,
         user_id: userId,
         start_date,
         end_date,
@@ -636,12 +737,48 @@ export const AssignRemoteWorkToUsersService = async (
 };
 
 export const AdminUpdateRemoteWorkRequestService = async (
+  req,
   request_id,
   updateData,
-  adminName
+  adminName,
 ) => {
-  const request = await RemoteWork.findById(request_id);
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const request = await RemoteWork.findOne({
+    _id: request_id,
+    company_id: companyId,
+  });
   if (!request) throw new AppError("Remote work request not found", 404);
+
+  // Team lead can only update (e.g. approve/reject) their team members' requests
+  if (req.user && req.user.role === "teamLead") {
+    const teamsLed = await Teams.find({
+      company_id: companyId,
+      lead: req.user._id,
+    }).select("members");
+    if (!teamsLed.length) {
+      throw new AppError("You are not leading any team", 403);
+    }
+    const allMemberIds = teamsLed.flatMap((t) =>
+      (t.members || []).map((m) => m.toString()),
+    );
+    if (!allMemberIds.includes(request.user_id.toString())) {
+      throw new AppError(
+        "You can only update remote work requests of your team members",
+        403,
+      );
+    }
+  } else if (
+    req.user &&
+    req.user.role !== "admin" &&
+    !req.user.is_super_admin
+  ) {
+    throw new AppError(
+      "You are not authorized to update this remote work request",
+      403,
+    );
+  }
 
   if (updateData.reason && !/^.{10,250}$/.test(updateData.reason)) {
     throw new AppError("Reason must be 10-250 characters", 400);
@@ -651,7 +788,7 @@ export const AdminUpdateRemoteWorkRequestService = async (
     if (updateData.status === "rejected" && !updateData.rejection_reason) {
       throw new AppError(
         "Rejection reason is required when rejecting a request",
-        400
+        400,
       );
     }
 
@@ -684,7 +821,7 @@ export const AdminUpdateRemoteWorkRequestService = async (
     datesChanged = true;
 
     updateData.total_days = Math.ceil(
-      (newEndDate - newStartDate) / (1000 * 60 * 60 * 24) + 1
+      (newEndDate - newStartDate) / (1000 * 60 * 60 * 24) + 1,
     );
   }
 
@@ -692,30 +829,33 @@ export const AdminUpdateRemoteWorkRequestService = async (
 
   if (newStatus !== "rejected" && (datesChanged || newStatus === "approved")) {
     await checkForDateConflicts(
+      companyId,
       request.user_id,
       newStartDate,
       newEndDate,
-      request._id
+      request._id,
     );
   }
 
-  const updatedRequest = await RemoteWork.findByIdAndUpdate(
-    request_id,
+  const updatedRequest = await RemoteWork.findOneAndUpdate(
+    { _id: request_id, company_id: companyId },
     updateData,
-    { new: true, runValidators: true }
+    { new: true, runValidators: true },
   );
 
   return updatedRequest;
 };
 
 async function checkForDateConflicts(
+  companyId,
   userId,
   startDate,
   endDate,
-  excludeRequestId = null
+  excludeRequestId = null,
 ) {
   const leaveConflict = await Leave.findOne({
-    user_id: userId,
+    company_id: companyId,
+    user: userId,
     status: { $in: ["approved", "pending"] },
     $or: [{ start_date: { $lte: endDate }, end_date: { $gte: startDate } }],
   });
@@ -725,6 +865,7 @@ async function checkForDateConflicts(
   }
 
   const remoteFilter = {
+    company_id: companyId,
     user_id: userId,
     status: { $in: ["approved", "pending"] },
     $or: [{ start_date: { $lte: endDate }, end_date: { $gte: startDate } }],
@@ -739,7 +880,7 @@ async function checkForDateConflicts(
   if (remoteConflict) {
     throw new AppError(
       "User has conflicting approved/pending remote work",
-      400
+      400,
     );
   }
 }

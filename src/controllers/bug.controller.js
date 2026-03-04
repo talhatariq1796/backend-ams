@@ -8,14 +8,14 @@ export const ReportBug = async (req, res) => {
 
     if (!title) throw new AppError("Bug title is required", 400);
 
-    const bug = await BugService.CreateBug({
+    const bug = await BugService.CreateBug(req, {
       title,
       details,
       screenshots,
       reported_by: req.user._id,
     });
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 201,
       message: "Bug reported successfully",
@@ -23,7 +23,7 @@ export const ReportBug = async (req, res) => {
       success: true,
     });
   } catch (err) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: err.statusCode || 500,
       message: err.message || "Internal server error",
@@ -34,8 +34,8 @@ export const ReportBug = async (req, res) => {
 
 export const GetAllBugs = async (req, res) => {
   try {
-    const bugs = await BugService.GetAllBugs();
-    AppResponse({
+    const bugs = await BugService.GetAllBugs(req);
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Bugs fetched successfully",
@@ -43,7 +43,7 @@ export const GetAllBugs = async (req, res) => {
       success: true,
     });
   } catch (err) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: err.statusCode || 500,
       message: err.message || "Internal server error",
@@ -60,8 +60,8 @@ export const UpdateBugStatus = async (req, res) => {
       throw new AppError("Invalid status", 400);
     }
 
-    const updatedBug = await BugService.UpdateBugStatus(id, status);
-    AppResponse({
+    const updatedBug = await BugService.UpdateBugStatus(req, id, status);
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Bug status updated successfully",
@@ -69,7 +69,7 @@ export const UpdateBugStatus = async (req, res) => {
       success: true,
     });
   } catch (err) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: err.statusCode || 500,
       message: err.message || "Internal server error",
@@ -81,15 +81,15 @@ export const UpdateBugStatus = async (req, res) => {
 export const DeleteBug = async (req, res) => {
   try {
     const { id } = req.params;
-    await BugService.DeleteBug(id);
-    AppResponse({
+    await BugService.DeleteBug(req, id);
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Bug deleted successfully",
       success: true,
     });
   } catch (err) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: err.statusCode || 500,
       message: err.message || "Internal server error",

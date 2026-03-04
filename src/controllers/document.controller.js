@@ -4,7 +4,7 @@ import { AppResponse } from "../middlewares/error.middleware.js";
 export const UploadDocument = async (req, res) => {
   try {
     const data = await DocumentService.UploadDocumentService(req);
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 201,
       message: "Document uploaded successfully.",
@@ -12,7 +12,7 @@ export const UploadDocument = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -24,10 +24,11 @@ export const UploadDocument = async (req, res) => {
 export const UpdateDocument = async (req, res) => {
   try {
     const data = await DocumentService.UpdateDocumentService(
+      req,
       req.params.id,
       req.body
     );
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Document updated successfully.",
@@ -35,7 +36,7 @@ export const UpdateDocument = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -46,15 +47,15 @@ export const UpdateDocument = async (req, res) => {
 
 export const DeleteDocument = async (req, res) => {
   try {
-    await DocumentService.DeleteDocumentService(req.params.id);
-    AppResponse({
+    await DocumentService.DeleteDocumentService(req, req.params.id);
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Document deleted successfully",
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -65,11 +66,8 @@ export const DeleteDocument = async (req, res) => {
 
 export const FetchDocuments = async (req, res) => {
   try {
-    const data = await DocumentService.FetchDocumentsService(
-      req.user,
-      req.query
-    );
-    AppResponse({
+    const data = await DocumentService.FetchDocumentsService(req, req.query);
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Documents fetched successfully",
@@ -77,7 +75,7 @@ export const FetchDocuments = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -90,7 +88,7 @@ export const GetDocumentTypes = async (req, res) => {
   try {
     const types = await DocumentService.GetDocumentTypesService();
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Document types retrieved successfully",
@@ -98,7 +96,7 @@ export const GetDocumentTypes = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -111,7 +109,7 @@ export const GetDocumentVisibilities = async (req, res) => {
   try {
     const visibilities = await DocumentService.GetDocumentVisibilitiesService();
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Document visibilities retrieved successfully",
@@ -119,7 +117,7 @@ export const GetDocumentVisibilities = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,

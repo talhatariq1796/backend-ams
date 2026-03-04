@@ -5,9 +5,17 @@ import AppError from "../middlewares/error.middleware.js";
 import dayjs from "dayjs";
 import mongoose from "mongoose";
 import ticketQueue from "../jobs/ticketsCreation.queue.js";
+import { getCompanyId } from "../utils/company.util.js";
 
-export const CreateTicketService = async (body, user) => {
-  const userWithTeam = await Users.findById(user._id).populate({
+export const CreateTicketService = async (req, user) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const body = req.body;
+  const userWithTeam = await Users.findOne({
+    _id: user._id,
+    company_id: companyId,
+  }).populate({
     path: "team",
     populate: { path: "department", select: "_id" },
   });
@@ -16,7 +24,7 @@ export const CreateTicketService = async (body, user) => {
 
   // Function to generate the next ticket ID
   const getNextTicketId = async () => {
-    const lastTicket = await Ticket.findOne()
+    const lastTicket = await Ticket.findOne({ company_id: companyId })
       .sort({ createdAt: -1 })
       .select("ticket_id");
     let newId = 1;
@@ -30,6 +38,7 @@ export const CreateTicketService = async (body, user) => {
   // Handle multiple assigned_to users → use queue
   if (Array.isArray(body.assigned_to) && body.assigned_to.length > 1) {
     const assignedUsers = await Users.find({
+      company_id: companyId,
       _id: { $in: body.assigned_to },
     }).populate({
       path: "team",
@@ -44,6 +53,7 @@ export const CreateTicketService = async (body, user) => {
       ticketQueue.add({
         ...body,
         ticket_id,
+        company_id: companyId,
         created_by: user._id,
         status: "pending",
         created_by_department,
@@ -61,7 +71,10 @@ export const CreateTicketService = async (body, user) => {
   // Single user assignment → create instantly
   let assigned_to_department = [];
   if (body.assigned_to?.length) {
-    const assignedUser = await Users.findById(body.assigned_to[0]).populate({
+    const assignedUser = await Users.findOne({
+      _id: body.assigned_to[0],
+      company_id: companyId,
+    }).populate({
       path: "team",
       populate: { path: "department", select: "_id" },
     });
@@ -71,6 +84,7 @@ export const CreateTicketService = async (body, user) => {
   const ticket_id = await getNextTicketId();
 
   const ticket = await Ticket.create({
+    company_id: companyId,
     ...body,
     ticket_id,
     created_by: user._id,
@@ -82,7 +96,10 @@ export const CreateTicketService = async (body, user) => {
   return ticket;
 };
 
-export const GetAllTicketsService = async (query, user) => {
+export const GetAllTicketsService = async (req, query, user) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const {
     department,
     priority,
@@ -93,7 +110,7 @@ export const GetAllTicketsService = async (query, user) => {
     limit = 10,
   } = query;
 
-  const filter = {};
+  const filter = { company_id: companyId };
 
   if (user.role !== "admin") {
     filter.$or = [{ created_by: user._id }, { assigned_to: user._id }];
@@ -119,6 +136,7 @@ export const GetAllTicketsService = async (query, user) => {
 
   if (search) {
     const matchedUsers = await Users.find({
+      company_id: companyId,
       name: { $regex: search, $options: "i" },
     }).select("_id");
 
@@ -167,11 +185,21 @@ export const GetAllTicketsService = async (query, user) => {
   };
 };
 
-export const AssignTicketService = async ({ ticket_id, assigned_to, user }) => {
-  const ticket = await Ticket.findById(ticket_id);
+export const AssignTicketService = async (
+  req,
+  { ticket_id, assigned_to, user }
+) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const ticket = await Ticket.findOne({
+    _id: ticket_id,
+    company_id: companyId,
+  });
   if (!ticket) throw new AppError("Ticket not found", 404);
 
   const assignedUsers = await Users.find({
+    company_id: companyId,
     _id: { $in: assigned_to },
   }).populate({
     path: "team",
@@ -187,12 +215,17 @@ export const AssignTicketService = async ({ ticket_id, assigned_to, user }) => {
   return ticket;
 };
 
-export const UpdateTicketStatusService = async ({
-  ticket_id,
-  status,
-  user,
-}) => {
-  const ticket = await Ticket.findById(ticket_id);
+export const UpdateTicketStatusService = async (
+  req,
+  { ticket_id, status, user }
+) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const ticket = await Ticket.findOne({
+    _id: ticket_id,
+    company_id: companyId,
+  });
   if (!ticket) throw new AppError("Ticket not found", 404);
 
   const isAdmin = user.role === "admin";
@@ -216,8 +249,14 @@ export const UpdateTicketStatusService = async ({
   return ticket;
 };
 
-export const EditTicketService = async ({ ticket_id, body, user }) => {
-  const ticket = await Ticket.findById(ticket_id);
+export const EditTicketService = async (req, { ticket_id, body, user }) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const ticket = await Ticket.findOne({
+    _id: ticket_id,
+    company_id: companyId,
+  });
   if (!ticket) throw new AppError("Ticket not found", 404);
 
   const isAdmin = user.role === "admin";
@@ -234,7 +273,10 @@ export const EditTicketService = async ({ ticket_id, body, user }) => {
 
   // If assigned_to is being updated, also update department
   if (body.assigned_to) {
-    const assignedUser = await Users.findById(body.assigned_to).populate({
+    const assignedUser = await Users.findOne({
+      _id: body.assigned_to,
+      company_id: companyId,
+    }).populate({
       path: "team",
       populate: { path: "department", select: "_id" },
     });
@@ -247,8 +289,17 @@ export const EditTicketService = async ({ ticket_id, body, user }) => {
   return ticket;
 };
 
-export const DeleteTicketService = async ({ ticket_id, user }) => {
-  const ticket = await Ticket.findById(ticket_id);
+export const DeleteTicketService = async (req, { ticket_id, user }) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const ticket = await Ticket.findOne({
+    _id: ticket_id,
+    company_id: companyId,
+  })
+    .populate("created_by", "_id")
+    .populate("assigned_to", "_id");
+
   if (!ticket) throw new AppError("Ticket not found", 404);
 
   const isAdmin = ["admin"].includes(user.role);
@@ -259,11 +310,18 @@ export const DeleteTicketService = async ({ ticket_id, user }) => {
   }
 
   await ticket.deleteOne();
-  return { message: "Ticket deleted successfully" };
+  return {
+    message: "Ticket deleted successfully",
+    created_by: ticket.created_by?._id || ticket.created_by,
+    title: ticket.title,
+  };
 };
 
-export const GetTicketStatusCountService = async (user) => {
-  const matchFilter = {};
+export const GetTicketStatusCountService = async (req, user) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const matchFilter = { company_id: new mongoose.Types.ObjectId(companyId) };
 
   if (user.role !== "admin") {
     const userId = new mongoose.Types.ObjectId(user._id);

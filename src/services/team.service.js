@@ -7,50 +7,73 @@ import Attendances from "../models/attendance.model.js";
 import { format } from "date-fns";
 import { GetAttendanceStatusByDateService } from "./attendance.service.js";
 import mongoose from "mongoose";
+import { getCompanyId } from "../utils/company.util.js";
 
 /**
- * Create a team. Only `leads` and `managers` (arrays of user IDs) are accepted for assignment.
- * @param {Object} body - { name, department, members?, leads?, managers? }
- * @param {string[]} body.leads - Array of user IDs to set as team leads (use multi-select in UI).
- * @param {string[]} body.managers - Array of user IDs to set as team managers (use multi-select in UI).
+ * Create a team. Supports company_id (multi-tenant), and leads/managers (multiple leads).
+ * @param {Object} req - request (for getCompanyId)
+ * @param {Object} body - { name, department, members?, leads?, managers?, company_id? }
  */
-export const CreateTeamService = async (body) => {
+export const CreateTeamService = async (req, body) => {
   const {
     name,
     department,
     members = [],
     leads: leadsInput = [],
     managers: managersInput = [],
+    company_id: bodyCompanyId,
   } = body;
+  const companyId = bodyCompanyId || getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const leads = Array.isArray(leadsInput) ? leadsInput : [];
   const managers = Array.isArray(managersInput) ? managersInput : [];
 
   const validationError = CheckValidation(["name", "department"], { body });
   if (validationError) throw new AppError(validationError, 400);
 
-  const teamDepartment = await Departments.findById(department);
+  const teamDepartment = await Departments.findOne({
+    _id: department,
+    company_id: companyId,
+  });
   if (!teamDepartment) throw new AppError("Department does not exist!", 400);
 
-  const existingTeam = await Teams.findOne({ name, department });
+  const existingTeam = await Teams.findOne({
+    company_id: companyId,
+    name,
+    department,
+  });
   if (existingTeam)
     throw new AppError(`Team '${name}' already exists in this department`, 409);
 
-  // ✅ Validate all leads (if provided)
   const leadIds = [
     ...new Set(leads.map((id) => id?.toString()).filter(Boolean)),
   ];
   for (const leadId of leadIds) {
-    const leadUser = await Users.findById(leadId);
-    if (!leadUser) throw new AppError("Team lead does not exist!", 400);
+    const leadUser = await Users.findOne({
+      _id: leadId,
+      company_id: companyId,
+    });
+    if (!leadUser)
+      throw new AppError(
+        "Team lead does not exist or is not in your company!",
+        400
+      );
   }
 
-  // ✅ Validate all managers (if provided)
   const managerIds = [
     ...new Set(managers.map((id) => id?.toString()).filter(Boolean)),
   ];
   for (const managerId of managerIds) {
-    const managerUser = await Users.findById(managerId);
-    if (!managerUser) throw new AppError("Manager does not exist!", 400);
+    const managerUser = await Users.findOne({
+      _id: managerId,
+      company_id: companyId,
+    });
+    if (!managerUser)
+      throw new AppError(
+        "Manager does not exist or is not in your company!",
+        400
+      );
   }
 
   const memberIdStrs = [
@@ -70,8 +93,8 @@ export const CreateTeamService = async (body) => {
     mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id,
   );
 
-  // ✅ Create new team (leads and managers assigned; we don't modify user records)
   const newTeam = new Teams({
+    company_id: companyId,
     name,
     department,
     leads: leadsArr,
@@ -80,7 +103,6 @@ export const CreateTeamService = async (body) => {
   });
   await newTeam.save();
 
-  // ✅ Process non-lead, non-manager members only (reassign them)
   if (membersArr.length > 0) {
     await Promise.all(
       membersArr.map(async (memberId) => {
@@ -122,14 +144,21 @@ export const CreateTeamService = async (body) => {
   ]);
 };
 
-export const GetAllTeamsService = async () => {
-  const teams = await Teams.find();
+export const GetAllTeamsService = async (companyId) => {
+  const teams = await Teams.find({ company_id: companyId });
   if (teams.length === 0) throw new AppError("No teams found", 400);
   return teams;
 };
 
-export const GetTeamByIdService = async (teamId, date = new Date()) => {
-  const team = await Teams.findById(teamId).populate([
+export const GetTeamByIdService = async (
+  companyId,
+  teamId,
+  date = new Date()
+) => {
+  const team = await Teams.findOne({
+    _id: teamId,
+    company_id: companyId,
+  }).populate([
     { path: "department" },
     {
       path: "members",
@@ -152,6 +181,7 @@ export const GetTeamByIdService = async (teamId, date = new Date()) => {
   const memberIds = team.members.map((member) => member._id);
 
   const attendanceRecords = await Attendances.find({
+    company_id: companyId,
     user_id: { $in: memberIds },
     date: queryDate,
   });
@@ -174,10 +204,41 @@ export const GetTeamByIdService = async (teamId, date = new Date()) => {
   };
 };
 
-export const GetAllTeamLeadsService = async () => {
-  const teamLeads = await Users.find({ role: "teamLead" }).select(
-    "first_name last_name designation email",
-  );
+export const GetAllTeamLeadsService = async (companyId) => {
+  const teams = await Teams.find({
+    company_id: companyId,
+    leads: { $exists: true, $ne: [] },
+  })
+    .select("leads")
+    .populate({
+      path: "leads",
+      select: "first_name last_name designation email _id",
+    })
+    .lean();
+
+  const leadMap = new Map();
+  teams.forEach((team) => {
+    (team.leads || []).forEach((lead) => {
+      if (lead && lead._id) {
+        const leadId = lead._id.toString();
+        if (!leadMap.has(leadId)) leadMap.set(leadId, lead);
+      }
+    });
+  });
+
+  const usersWithTeamLeadRole = await Users.find({
+    company_id: companyId,
+    role: "teamLead",
+  })
+    .select("first_name last_name designation email _id")
+    .lean();
+
+  usersWithTeamLeadRole.forEach((user) => {
+    const userId = user._id.toString();
+    if (!leadMap.has(userId)) leadMap.set(userId, user);
+  });
+
+  const teamLeads = Array.from(leadMap.values());
 
   if (!teamLeads || teamLeads.length === 0) {
     throw new AppError("No team leads found", 200);
@@ -186,17 +247,15 @@ export const GetAllTeamLeadsService = async () => {
   return teamLeads;
 };
 
-export const GetTeamLeadsService = async (teamId) => {
-  const team = await Teams.findById(teamId).populate(
+export const GetTeamLeadService = async (companyId, teamId) => {
+  const team = await Teams.findOne({ _id: teamId, company_id: companyId }).populate(
     "leads",
     "first_name last_name _id",
   );
   if (!team) {
     throw new AppError("Team not found", 400);
   }
-
-  const teamLeads = team.leads || [];
-  return teamLeads;
+  return team.leads || [];
 };
 
 /**
@@ -206,7 +265,8 @@ export const GetTeamLeadsService = async (teamId) => {
  * @param {string[]} [updateTeamData.leads] - Array of user IDs to set as team leads; if omitted, existing leads are kept.
  * @param {string[]} [updateTeamData.managers] - Array of user IDs to set as team managers; if omitted, existing managers are kept.
  */
-export const UpdateTeamService = async (teamId, updateTeamData) => {
+export const UpdateTeamService = async (teamId, updateTeamData, companyId) => {
+  if (!companyId) throw new AppError("Company context required", 403);
   const {
     members = [],
     removed_members = [],
@@ -220,7 +280,7 @@ export const UpdateTeamService = async (teamId, updateTeamData) => {
     ? updateTeamData.managers
     : undefined;
 
-  const team = await Teams.findById(teamId);
+  const team = await Teams.findOne({ _id: teamId, company_id: companyId });
   if (!team) throw new AppError("Team not found", 400);
 
   const oldDepartmentId = team.department;
@@ -228,15 +288,17 @@ export const UpdateTeamService = async (teamId, updateTeamData) => {
     new_department_id &&
     new_department_id.toString() !== oldDepartmentId.toString();
 
-  // ✅ Validate department change
   if (departmentChanged) {
-    const newDepartment = await Departments.findById(new_department_id);
+    const newDepartment = await Departments.findOne({
+      _id: new_department_id,
+      company_id: companyId,
+    });
     if (!newDepartment) throw new AppError("New department not found", 400);
   }
 
-  // ✅ Check if another team already exists with same name in same department
   if (name) {
     const existingTeam = await Teams.findOne({
+      company_id: companyId,
       name,
       department: new_department_id || oldDepartmentId,
     });
@@ -554,8 +616,9 @@ export const GetTeamMembersService = async ({
   };
 };
 
-export const DeleteTeamService = async (teamId) => {
-  const team = await Teams.findById(teamId);
+export const DeleteTeamService = async (teamId, companyId) => {
+  if (!companyId) throw new AppError("Company context required", 403);
+  const team = await Teams.findOne({ _id: teamId, company_id: companyId });
   if (!team) throw new AppError("Team not found", 400);
 
   if (team.members.length > 0) {
@@ -571,11 +634,12 @@ export const DeleteTeamService = async (teamId) => {
   return team;
 };
 
-export const AddMemberToTeamService = async (teamId, memberId) => {
-  const team = await Teams.findById(teamId);
+export const AddMemberToTeamService = async (teamId, memberId, companyId) => {
+  if (!companyId) throw new AppError("Company context required", 403);
+  const team = await Teams.findOne({ _id: teamId, company_id: companyId });
   if (!team) throw new AppError("Team not found", 400);
 
-  const member = await Users.findById(memberId);
+  const member = await Users.findOne({ _id: memberId, company_id: companyId });
   if (!member) throw new AppError("User not found", 400);
 
   if (member.team)
@@ -590,11 +654,12 @@ export const AddMemberToTeamService = async (teamId, memberId) => {
   return team;
 };
 
-export const RemoveMemberFromTeamService = async (teamId, memberId) => {
-  const team = await Teams.findById(teamId);
+export const RemoveMemberFromTeamService = async (teamId, memberId, companyId) => {
+  if (!companyId) throw new AppError("Company context required", 403);
+  const team = await Teams.findOne({ _id: teamId, company_id: companyId });
   if (!team) throw new AppError("Team not found", 400);
 
-  const member = await Users.findById(memberId);
+  const member = await Users.findOne({ _id: memberId, company_id: companyId });
   if (!member) throw new AppError("User not found", 400);
 
   if (!team.members.includes(memberId)) {

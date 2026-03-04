@@ -6,81 +6,77 @@ import User from "../../models/user.model.js";
 import Teams from "../../models/team.model.js";
 import AppError from "../../middlewares/error.middleware.js";
 import mongoose from "mongoose";
+import { getCompanyId } from "../../utils/company.util.js";
 
 const modelMap = {
   leave: Leave,
   remoteWork: RemoteWork,
   workingHours: WorkingHours,
 };
-export const getRecentRequestsService = async (userInfo, scope = "self") => {
-  let query = {};
+export const getRecentRequestsService = async (req) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const userInfo = req.user;
+  const scope = req.query?.scope || "self";
+  let query = { company_id: companyId };
 
   if (userInfo.role === "admin") {
-    // Admin gets all recent requests
-    query = {};
+    query = { company_id: companyId };
   } else if (userInfo.role === "manager") {
-    // Manager → fetch all teams where this user is a manager
-    const teamsManagedByUser = await Teams.find({ managers: userInfo._id }).select(
-      "members"
-    );
+    const teamsManagedByUser = await Teams.find({
+      company_id: companyId,
+      managers: userInfo._id,
+    }).select("members");
 
     let teamMemberIds = [];
     teamsManagedByUser.forEach((team) => {
       if (team.members?.length) {
         teamMemberIds.push(
-          ...team.members.map((m) => new mongoose.Types.ObjectId(m))
+          ...team.members.map((m) => new mongoose.Types.ObjectId(m)),
         );
       }
     });
-
-    // Remove duplicates
     teamMemberIds = [...new Set(teamMemberIds.map((id) => id.toString()))].map(
-      (id) => new mongoose.Types.ObjectId(id)
+      (id) => new mongoose.Types.ObjectId(id),
     );
 
     if (scope === "team") {
-      // Exclude manager himself
       teamMemberIds = teamMemberIds.filter((id) => !id.equals(userInfo._id));
       if (teamMemberIds.length === 0)
         throw new AppError("No team members found for this manager", 404);
-      query = { userId: { $in: teamMemberIds } };
+      query = { company_id: companyId, userId: { $in: teamMemberIds } };
     } else {
-      // Self requests
-      query = { userId: userInfo._id };
+      query = { company_id: companyId, userId: userInfo._id };
     }
   } else if (userInfo.role === "teamLead") {
-    // ✅ Fetch all teams where this user is the lead
-    const teamsLedByUser = await Teams.find({ leads: userInfo._id }).select(
-      "members"
-    );
+    const teamsLedByUser = await Teams.find({
+      company_id: companyId,
+      leads: userInfo._id,
+    }).select("members");
 
     let teamMemberIds = [];
     teamsLedByUser.forEach((team) => {
       if (team.members?.length) {
         teamMemberIds.push(
-          ...team.members.map((m) => new mongoose.Types.ObjectId(m))
+          ...team.members.map((m) => new mongoose.Types.ObjectId(m)),
         );
       }
     });
-
-    // Remove duplicates
     teamMemberIds = [...new Set(teamMemberIds.map((id) => id.toString()))].map(
-      (id) => new mongoose.Types.ObjectId(id)
+      (id) => new mongoose.Types.ObjectId(id),
     );
 
     if (scope === "team") {
-      // Exclude team lead himself
       teamMemberIds = teamMemberIds.filter((id) => !id.equals(userInfo._id));
       if (teamMemberIds.length === 0)
         throw new AppError("No team members found for this team lead", 404);
-      query = { userId: { $in: teamMemberIds } };
+      query = { company_id: companyId, userId: { $in: teamMemberIds } };
     } else {
-      // Self requests
-      query = { userId: userInfo._id };
+      query = { company_id: companyId, userId: userInfo._id };
     }
   } else {
-    // Regular user → only self
-    query = { userId: userInfo._id };
+    query = { company_id: companyId, userId: userInfo._id };
   }
 
   const logs = await RequestLog.find(query)
@@ -93,12 +89,18 @@ export const getRecentRequestsService = async (userInfo, scope = "self") => {
       const Model = modelMap[log.type];
       if (!Model) return null;
 
-      const requestData = await Model.findById(log.referenceId).lean();
+      const requestData = await Model.findOne({
+        _id: log.referenceId,
+        company_id: companyId,
+      }).lean();
       if (!requestData) return null;
 
-      const user = await User.findById(log.userId)
+      const user = await User.findOne({
+        _id: log.userId,
+        company_id: companyId,
+      })
         .select(
-          "first_name last_name email profile_picture employee_id designation"
+          "first_name last_name email profile_picture employee_id designation",
         )
         .lean();
 
@@ -121,7 +123,7 @@ export const getRecentRequestsService = async (userInfo, scope = "self") => {
             }
           : null,
       };
-    })
+    }),
   );
 
   return enriched.filter(Boolean);

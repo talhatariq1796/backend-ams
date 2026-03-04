@@ -1,10 +1,13 @@
 import { AppResponse } from "../middlewares/error.middleware.js";
 import * as SuggestionService from "../services/suggestion.service.js";
 import { checkUserAuthorization, isAdmin } from "../utils/getUserRole.util.js";
+import { hasPermissionAsync } from "../utils/checkPermission.util.js";
 import AppError from "../middlewares/error.middleware.js";
 import { createLogsAndNotification } from "../utils/logNotification.js";
 import { NOTIFICATION_TYPES } from "../constants/notificationTypes.js";
 import Notification from "../models/notification.model.js";
+import { getCompanyId } from "../utils/company.util.js";
+import Suggestion from "../models/suggestion.model.js";
 
 export const CreateSuggestion = async (req, res) => {
   try {
@@ -16,53 +19,32 @@ export const CreateSuggestion = async (req, res) => {
     } = req.body;
 
     const suggestion = await SuggestionService.CreateSuggestionService(
-      req.user,
+      req,
       req.body
     );
 
     if (suggestion) {
-      // Determine who should be notified based on post visibility
-      let notifyAdmins = false;
-      let notifyOthers = false;
-      let notifyDepartments = [];
+      const companyId = getCompanyId(req);
+      const departmentsToNotify = suggestion.visible_to_departments || [];
+      const departmentIds = departmentsToNotify.map((dept) =>
+        typeof dept === "object" && dept._id ? dept._id : dept
+      );
+      const hasSelectedDepartments = departmentIds.length > 0;
+      const isPublicOrAdminOnly = !hasSelectedDepartments;
 
-      if (is_public) {
-        // If post is public, notify all users
-        notifyOthers = true;
-      } else if (req.user.role === "admin") {
-        // If admin created post for specific departments, notify those departments
-        if (visible_to_departments && visible_to_departments.length > 0) {
-          notifyDepartments = visible_to_departments;
-        } else {
-          // If admin created post without specific departments, notify all
-          notifyOthers = true;
-        }
-      } else {
-        // If regular user created post, notify admins and their department
-        notifyAdmins = true;
-        // Get user's department from the suggestion's visible_to_departments
-        if (
-          suggestion.visible_to_departments &&
-          suggestion.visible_to_departments.length > 0
-        ) {
-          notifyDepartments = suggestion.visible_to_departments.map(
-            (dept) => dept._id || dept
-          );
-        }
-      }
-
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.SUGGESTIONS,
         message: `created a post.`,
-        notifyAdmins,
-        notifyOthers,
-        notifyDepartments,
+        notifyAdmins: req.user.role !== "admin" && isPublicOrAdminOnly,
+        notifyOthers: false,
+        notifyDepartments: hasSelectedDepartments ? departmentIds : [],
         hideNotificationIdentity: is_identity_hidden,
+        company_id: companyId,
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 201,
       message: "Suggestions created successfully",
@@ -70,7 +52,7 @@ export const CreateSuggestion = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode,
       message: error.message,
@@ -85,8 +67,8 @@ export const DeleteComment = async (req, res) => {
 
     const { suggestionId, commentId } = req.params;
 
-    // Fetch comment for notification before deleting
     const comment = await SuggestionService.getCommentById(
+      req,
       suggestionId,
       commentId
     );
@@ -94,20 +76,18 @@ export const DeleteComment = async (req, res) => {
       throw new AppError("Comment not found", 404);
     }
 
-    // Check if user is the comment creator
-    const isCommentOwner = String(comment.created_by) === String(req.user._id);
-
-    // If not admin and not the owner, deny access
-    if (req.user.role !== "admin" && !isCommentOwner) {
-      throw new AppError("You can only delete your own comments", 403);
+    const canDeleteAny = await hasPermissionAsync(req, "delete_any_post_comment");
+    const canDeleteOwn = await hasPermissionAsync(req, "delete_own_post_comment");
+    const isOwnComment = String(comment.created_by) === String(req.user._id);
+    if (!canDeleteAny && !(canDeleteOwn && isOwnComment)) {
+      throw new AppError("You do not have permission to delete this comment", 403);
     }
 
-    // If user is the owner (not admin), check if 15 minutes have passed
-    if (isCommentOwner && req.user.role !== "admin") {
+    // If user is the owner (not admin), enforce 15-minute deletion window
+    if (isOwnComment && !canDeleteAny && req.user.role !== "admin") {
       const commentCreatedAt = new Date(comment.createdAt);
       const now = new Date();
       const minutesSinceCreation = (now - commentCreatedAt) / (1000 * 60);
-
       if (minutesSinceCreation > 15) {
         throw new AppError(
           "You can only delete your own comments within 15 minutes of creation",
@@ -116,15 +96,10 @@ export const DeleteComment = async (req, res) => {
       }
     }
 
-    await SuggestionService.deleteCommentService(
-      suggestionId,
-      commentId,
-      req.user
-    );
+    await SuggestionService.deleteCommentService(req, suggestionId, commentId);
 
-    // Notify comment author only if different from the user deleting the comment
-    if (!isCommentOwner) {
-      await createLogsAndNotification({
+    if (!isOwnComment) {
+      createLogsAndNotification({
         notification_by: req.user._id,
         notification_to: comment.created_by,
         type: NOTIFICATION_TYPES.SUGGESTIONS,
@@ -132,14 +107,14 @@ export const DeleteComment = async (req, res) => {
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Comment deleted successfully",
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -154,12 +129,13 @@ export const ToggleLikeSuggestion = async (req, res) => {
     const { suggestionId } = req.params;
 
     const message = await SuggestionService.toggleLikeSuggestionService(
-      suggestionId,
-      req.user
+      req,
+      suggestionId
     );
 
     if (message === "Successfully liked") {
       const suggestion = await SuggestionService.getSuggestionById(
+        req,
         suggestionId
       );
 
@@ -177,26 +153,27 @@ export const ToggleLikeSuggestion = async (req, res) => {
           message: "liked your post.",
         });
 
-        // Create new notification (this will send push notification via queue)
-        await createLogsAndNotification({
+        const companyId = getCompanyId(req);
+        createLogsAndNotification({
           notification_by: req.user._id,
           notification_to: postCreatorId,
           type: NOTIFICATION_TYPES.SUGGESTIONS,
           message: `liked your post.`,
           notifyAdmins: false,
           hideNotificationIdentity: suggestion.is_identity_hidden,
+          ...(companyId && { company_id: companyId }),
         });
       }
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message,
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Internal server error",
@@ -220,28 +197,31 @@ export const AddComment = async (req, res) => {
     }
 
     const comment = await SuggestionService.addCommentToSuggestionService(
+      req,
       suggestionId,
-      req.user,
       text.trim()
     );
 
-    const suggestion = await SuggestionService.getSuggestionById(suggestionId);
+    const suggestion = await SuggestionService.getSuggestionById(
+      req,
+      suggestionId
+    );
 
-    // Get post creator ID (handle both populated and non-populated cases)
     const postCreatorId = suggestion?.created_by?._id || suggestion?.created_by;
-
     if (postCreatorId && String(postCreatorId) !== String(req.user._id)) {
-      await createLogsAndNotification({
+      const companyId = getCompanyId(req);
+      createLogsAndNotification({
         notification_by: req.user._id,
         notification_to: postCreatorId,
         type: NOTIFICATION_TYPES.SUGGESTIONS,
         message: `commented on your post.`,
         notifyAdmins: false,
         hideNotificationIdentity: suggestion.is_identity_hidden,
+        ...(companyId && { company_id: companyId }),
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Comment added successfully",
@@ -249,7 +229,7 @@ export const AddComment = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Something went wrong",
@@ -269,30 +249,26 @@ export const EditComment = async (req, res) => {
       throw new AppError("Comment text cannot be empty", 400);
     }
 
-    // Fetch comment before update
-    const originalComment = await SuggestionService.getCommentById(
+    const comment = await SuggestionService.getCommentById(
+      req,
       suggestionId,
       commentId
     );
-    if (!originalComment) {
+    if (!comment) {
       throw new AppError("Comment not found", 404);
     }
 
-    // Check if user is the comment creator
-    const isCommentOwner =
-      String(originalComment.created_by) === String(req.user._id);
-
-    // If not admin and not the owner, deny access
-    if (req.user.role !== "admin" && !isCommentOwner) {
-      throw new AppError("You can only edit your own comments", 403);
+    const canEditAny = await hasPermissionAsync(req, "edit_any_post_comment");
+    const canEditOwn = await hasPermissionAsync(req, "edit_own_post_comment");
+    const isOwnComment = String(comment.created_by) === String(req.user._id);
+    if (!canEditAny && !(canEditOwn && isOwnComment)) {
+      throw new AppError("You do not have permission to edit this comment", 403);
     }
 
-    // If user is the owner (not admin), check if 15 minutes have passed
-    if (isCommentOwner && req.user.role !== "admin") {
-      const commentCreatedAt = new Date(originalComment.createdAt);
+    if (isOwnComment && !canEditAny && req.user.role !== "admin") {
+      const commentCreatedAt = new Date(comment.createdAt);
       const now = new Date();
       const minutesSinceCreation = (now - commentCreatedAt) / (1000 * 60);
-
       if (minutesSinceCreation > 15) {
         throw new AppError(
           "You can only edit your own comments within 15 minutes of creation",
@@ -302,22 +278,21 @@ export const EditComment = async (req, res) => {
     }
 
     const updatedComment = await SuggestionService.editCommentService(
+      req,
       commentId,
-      text,
-      req.user
+      text
     );
 
-    // Notify comment author (optional if different from admin)
-    if (!isCommentOwner) {
-      await createLogsAndNotification({
+    if (String(comment.created_by) !== String(req.user._id)) {
+      createLogsAndNotification({
         notification_by: req.user._id,
-        notification_to: originalComment.created_by,
+        notification_to: comment.created_by,
         type: NOTIFICATION_TYPES.SUGGESTIONS,
         message: `edited your comment on a post.`,
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Comment updated successfully",
@@ -325,7 +300,7 @@ export const EditComment = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -340,13 +315,14 @@ export const GetLikesForSuggestion = async (req, res) => {
     const { page = 1, limit = 10, isAsc = "false" } = req.query;
 
     const likes = await SuggestionService.getLikesBySuggestionId(
+      req,
       suggestionId,
       parseInt(page),
       parseInt(limit),
       isAsc === "true"
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Likes fetched successfully",
@@ -354,7 +330,7 @@ export const GetLikesForSuggestion = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -370,13 +346,14 @@ export const GetCommentsForSuggestion = async (req, res) => {
     const { page = 1, limit = 10, isAsc = "false" } = req.query;
 
     const comments = await SuggestionService.getCommentsBySuggestionId(
+      req,
       suggestionId,
       parseInt(page),
       parseInt(limit),
       isAsc === "true"
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Comments fetched successfully",
@@ -384,7 +361,7 @@ export const GetCommentsForSuggestion = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -407,7 +384,7 @@ export const GetVisibleSuggestions = async (req, res) => {
       category
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Visible suggestions retrieved successfully",
@@ -415,7 +392,7 @@ export const GetVisibleSuggestions = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -429,32 +406,23 @@ export const EditSuggestion = async (req, res) => {
     checkUserAuthorization(req.user);
 
     const { suggestionId } = req.params;
-
-    // Get the suggestion to check ownership and creation time
-    const existingSuggestion = await SuggestionService.getSuggestionById(
-      suggestionId
-    );
-    if (!existingSuggestion) {
+    const suggestion = await Suggestion.findById(suggestionId)
+      .select("created_by createdAt")
+      .lean();
+    if (!suggestion) {
       throw new AppError("Suggestion not found", 404);
     }
 
-    // Check if user is the post creator
-    const postCreatorId =
-      existingSuggestion.created_by?._id || existingSuggestion.created_by;
-    const isPostOwner =
-      postCreatorId && String(postCreatorId) === String(req.user._id);
-
-    // If not admin and not the owner, deny access
-    if (req.user.role !== "admin" && !isPostOwner) {
-      throw new AppError("You can only edit your own posts", 403);
+    const canEditAny = await hasPermissionAsync(req, "edit_any_post");
+    const canEditOwn = await hasPermissionAsync(req, "edit_own_post");
+    const isOwn = String(suggestion.created_by) === String(req.user._id);
+    if (!canEditAny && !(canEditOwn && isOwn)) {
+      throw new AppError("You do not have permission to edit this post", 403);
     }
 
-    // If user is the owner (not admin), check if 15 minutes have passed
-    if (isPostOwner && req.user.role !== "admin") {
-      const postCreatedAt = new Date(existingSuggestion.createdAt);
-      const now = new Date();
-      const minutesSinceCreation = (now - postCreatedAt) / (1000 * 60);
-
+    if (isOwn && !canEditAny && req.user.role !== "admin") {
+      const postCreatedAt = new Date(suggestion.createdAt);
+      const minutesSinceCreation = (Date.now() - postCreatedAt) / (1000 * 60);
       if (minutesSinceCreation > 15) {
         throw new AppError(
           "You can only edit your own posts within 15 minutes of creation",
@@ -464,14 +432,13 @@ export const EditSuggestion = async (req, res) => {
     }
 
     const updatedSuggestion = await SuggestionService.EditSuggestionService(
-      req.user,
+      req,
       suggestionId,
       req.body
     );
 
-    // Send notification if creator is known and admin edited someone else's post
-    if (updatedSuggestion?.created_by?._id && !isPostOwner) {
-      await createLogsAndNotification({
+    if (updatedSuggestion?.created_by?._id && !isOwn) {
+      createLogsAndNotification({
         notification_by: req.user._id,
         notification_to: updatedSuggestion.created_by._id,
         type: NOTIFICATION_TYPES.SUGGESTIONS,
@@ -480,7 +447,7 @@ export const EditSuggestion = async (req, res) => {
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Suggestions updated successfully",
@@ -488,7 +455,7 @@ export const EditSuggestion = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Something went wrong",
@@ -514,66 +481,31 @@ export const RespondToSuggestion = async (req, res) => {
     }
 
     const response = await SuggestionService.RespondToSuggestionService(
+      req,
       suggestionId,
-      message,
-      admin
+      message
     );
 
-    const suggestion = await SuggestionService.getSuggestionById(suggestionId);
-
-    // Determine who should be notified based on post visibility
-    let notifyAdmins = false;
-    let notifyOthers = false;
-    let notifyDepartments = [];
-    let notification_to = null;
-
-    // Check if post has a creator and it's not the admin's own post
-    const postCreatorId = suggestion.created_by?._id || suggestion.created_by;
-    const shouldNotifyCreator =
-      postCreatorId && String(postCreatorId) !== String(admin._id);
-
-    if (shouldNotifyCreator) {
-      notification_to = postCreatorId;
-
-      if (suggestion.is_public) {
-        // If post is public, notify all users (including the creator via notification_to)
-        notifyOthers = true;
-      } else if (
-        suggestion.visible_to_departments &&
-        suggestion.visible_to_departments.length > 0
-      ) {
-        // If post is for specific departments, notify all users in those departments
-        notifyDepartments = suggestion.visible_to_departments.map(
-          (dept) => dept._id || dept
-        );
-      }
-      // If post is admin-only or has no specific visibility, only notify the creator
-      // notification_to is already set above
-    } else if (suggestion.is_public) {
-      // Even if admin responded to their own post, if it's public, notify all users
-      notifyOthers = true;
-    } else if (
-      suggestion.visible_to_departments &&
-      suggestion.visible_to_departments.length > 0
+    const suggestion = await SuggestionService.getSuggestionById(
+      req,
+      suggestionId
+    );
+    const companyId = getCompanyId(req);
+    if (
+      suggestion?.created_by?._id &&
+      String(suggestion.created_by._id) !== String(admin._id)
     ) {
-      // If admin responded to their own post but it's for specific departments, notify those departments
-      notifyDepartments = suggestion.visible_to_departments.map(
-        (dept) => dept._id || dept
-      );
+      createLogsAndNotification({
+        notification_by: admin._id,
+        notification_to: suggestion.created_by._id,
+        notifyDepartments: suggestion.visible_to_departments || [],
+        type: NOTIFICATION_TYPES.SUGGESTIONS,
+        message: `responded to a post.`,
+        ...(companyId && { company_id: companyId }),
+      });
     }
 
-    await createLogsAndNotification({
-      notification_by: admin._id,
-      notification_to,
-      notifyAdmins,
-      notifyOthers,
-      notifyDepartments,
-      type: NOTIFICATION_TYPES.SUGGESTIONS,
-      message: `responded to a post.`,
-      hideNotificationIdentity: suggestion.is_identity_hidden,
-    });
-
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Response sent successfully",
@@ -581,7 +513,7 @@ export const RespondToSuggestion = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -602,12 +534,12 @@ export const EditResponseToSuggestion = async (req, res) => {
     }
 
     const response = await SuggestionService.EditResponseToSuggestionService(
+      req,
       suggestionId,
-      message,
-      req.user
+      message
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Response updated successfully",
@@ -615,7 +547,7 @@ export const EditResponseToSuggestion = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -633,12 +565,16 @@ export const DeleteResponseFromSuggestion = async (req, res) => {
 
     const updatedSuggestion =
       await SuggestionService.DeleteResponseFromSuggestionService(
-        suggestionId,
-        admin
+        req,
+        suggestionId
       );
 
-    if (String(updatedSuggestion.created_by._id) !== String(admin._id)) {
-      await createLogsAndNotification({
+    // Only send notification if created_by exists and is not the admin
+    if (
+      updatedSuggestion?.created_by?._id &&
+      String(updatedSuggestion.created_by._id) !== String(admin._id)
+    ) {
+      createLogsAndNotification({
         notification_by: admin._id,
         notification_to: updatedSuggestion.created_by._id,
         notifyDepartments: updatedSuggestion.visible_to_departments || [],
@@ -646,10 +582,11 @@ export const DeleteResponseFromSuggestion = async (req, res) => {
         message: "removed their response to your post.",
         notifyAdmins: false,
         hideLogsIdentity: updatedSuggestion.is_identity_hidden,
+        company_id: req.company_id,
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Response deleted successfully",
@@ -662,7 +599,7 @@ export const DeleteResponseFromSuggestion = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -677,7 +614,7 @@ export const GetSuggestionCategories = async (req, res) => {
 
     const categories = await SuggestionService.GetSuggestionCategoriesService();
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Suggestion categories retrieved successfully",
@@ -685,7 +622,7 @@ export const GetSuggestionCategories = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -716,9 +653,8 @@ export const GetUserSuggestions = async (req, res) => {
     }
 
     const suggestions = await SuggestionService.GetUserSuggestionsService(
+      req,
       userId,
-      requestingUserId,
-      requestingUserRole,
       filter_type,
       start_date,
       end_date,
@@ -727,7 +663,7 @@ export const GetUserSuggestions = async (req, res) => {
       is_responded
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Suggestions retrieved successfully",
@@ -735,7 +671,7 @@ export const GetUserSuggestions = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Internal Server Error",
@@ -762,7 +698,7 @@ export const GetAllSuggestions = async (req, res) => {
     } = req.query;
 
     const response = await SuggestionService.GetAllSuggestionsService(
-      req.user,
+      req,
       filter_type,
       start_date,
       end_date,
@@ -775,7 +711,7 @@ export const GetAllSuggestions = async (req, res) => {
       department_id
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Suggestions retrieved successfully",
@@ -783,7 +719,7 @@ export const GetAllSuggestions = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Something went wrong",
@@ -796,33 +732,23 @@ export const DeleteSuggestion = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
 
-    const { suggestionId } = req.params;
-
-    // Get the suggestion to check ownership and creation time
-    const existingSuggestion = await SuggestionService.getSuggestionById(
-      suggestionId
-    );
-    if (!existingSuggestion) {
+    const suggestionDoc = await Suggestion.findById(req.params.suggestionId)
+      .select("created_by createdAt")
+      .lean();
+    if (!suggestionDoc) {
       throw new AppError("Suggestion not found", 404);
     }
 
-    // Check if user is the post creator
-    const postCreatorId =
-      existingSuggestion.created_by?._id || existingSuggestion.created_by;
-    const isPostOwner =
-      postCreatorId && String(postCreatorId) === String(req.user._id);
-
-    // If not admin and not the owner, deny access
-    if (req.user.role !== "admin" && !isPostOwner) {
-      throw new AppError("You can only delete your own posts", 403);
+    const canDeleteAny = await hasPermissionAsync(req, "delete_any_post");
+    const canDeleteOwn = await hasPermissionAsync(req, "delete_own_post");
+    const isOwn = String(suggestionDoc.created_by) === String(req.user._id);
+    if (!canDeleteAny && !(canDeleteOwn && isOwn)) {
+      throw new AppError("You do not have permission to delete this post", 403);
     }
 
-    // If user is the owner (not admin), check if 15 minutes have passed
-    if (isPostOwner && req.user.role !== "admin") {
-      const postCreatedAt = new Date(existingSuggestion.createdAt);
-      const now = new Date();
-      const minutesSinceCreation = (now - postCreatedAt) / (1000 * 60);
-
+    if (isOwn && !canDeleteAny && req.user.role !== "admin") {
+      const postCreatedAt = new Date(suggestionDoc.createdAt);
+      const minutesSinceCreation = (Date.now() - postCreatedAt) / (1000 * 60);
       if (minutesSinceCreation > 15) {
         throw new AppError(
           "You can only delete your own posts within 15 minutes of creation",
@@ -832,16 +758,15 @@ export const DeleteSuggestion = async (req, res) => {
     }
 
     const suggestion = await SuggestionService.deleteSuggestion(
-      suggestionId,
-      req.user._id,
-      req.user.role
+      req,
+      req.params.suggestionId
     );
 
-    // Send notification if admin deleted someone else's post
-    if (suggestion && !isPostOwner) {
-      await createLogsAndNotification({
+    const creatorId = suggestion?.created_by?._id || suggestion?.created_by;
+    if (suggestion && creatorId && String(creatorId) !== String(req.user._id)) {
+      createLogsAndNotification({
         notification_by: req.user._id,
-        notification_to: suggestion.created_by,
+        notification_to: creatorId,
         type: NOTIFICATION_TYPES.SUGGESTIONS,
         message: `deleted post.`,
         notifyAdmins: false,
@@ -849,14 +774,14 @@ export const DeleteSuggestion = async (req, res) => {
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Suggestion deleted successfully",
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -870,10 +795,10 @@ export const GetNotRespondedSuggestionsCount = async (req, res, next) => {
     checkUserAuthorization(req.user);
 
     const data = await SuggestionService.GetNotRespondedSuggestionsCountService(
-      req.user
+      req
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Not responded suggestions count fetched successfully",

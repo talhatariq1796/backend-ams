@@ -1,36 +1,49 @@
 import WorkingHours from "../models/workingHours.model.js";
 import Users from "../models/user.model.js";
 import AppError from "../middlewares/error.middleware.js";
-import OfficeConfig from "../models/config.model.js";
+import CompanyConfigs from "../models/config.model.js";
+import { getCompanyId } from "../utils/company.util.js";
 
-export const UpsertWorkingHoursService = async (userId, data) => {
+export const UpsertWorkingHoursService = async (req, userId, data) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const workingHours = await WorkingHours.findOneAndUpdate(
-    { user_id: userId },
-    { $set: data },
+    { company_id: companyId, user_id: userId },
+    { $set: { ...data, company_id: companyId } },
     { upsert: true, new: true }
   );
-  await Users.findByIdAndUpdate(userId, {
-    is_default_working_hours: data.is_default_working_hours,
-  });
+  await Users.findOneAndUpdate(
+    { _id: userId, company_id: companyId },
+    {
+      is_default_working_hours: data.is_default_working_hours,
+    }
+  );
   return workingHours;
 };
 
-export const UpsertWorkingHoursForUsersService = async (userIds, data) => {
+export const UpsertWorkingHoursForUsersService = async (req, userIds, data) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const results = [];
 
   for (const userId of userIds) {
     const workingHours = await WorkingHours.findOneAndUpdate(
-      { user_id: userId },
-      { $set: data },
+      { company_id: companyId, user_id: userId },
+      { $set: { ...data, company_id: companyId } },
       { upsert: true, new: true }
     ).populate(
       "user_id",
       "_id first_name last_name employee_id team profile_picture"
     );
 
-    await Users.findByIdAndUpdate(userId, {
-      is_default_working_hours: data.is_default_working_hours,
-    });
+    await Users.findOneAndUpdate(
+      { _id: userId, company_id: companyId },
+      {
+        is_default_working_hours: data.is_default_working_hours,
+      }
+    );
 
     results.push({
       _id: workingHours._id,
@@ -62,12 +75,15 @@ export const UpsertWorkingHoursForUsersService = async (userIds, data) => {
   return results;
 };
 
-export const GetWorkingHoursByUserIdService = async (userId) => {
-  const user = await Users.findById(userId);
+export const GetWorkingHoursByUserIdService = async (req, userId) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = await Users.findOne({ _id: userId, company_id: companyId });
   if (!user) throw new AppError("User not found", 400);
 
-  const config = await OfficeConfig.findOne();
-  if (!config) throw new AppError("Office configuration not found", 400);
+  const config = await CompanyConfigs.findOne({ company_id: companyId });
+  if (!config) throw new AppError("Company configuration not found", 400);
 
   // Business Developers get bd_working_hours if role includes "business"
   const isBusinessDeveloper = user.role?.toLowerCase().includes("business");
@@ -95,7 +111,10 @@ export const GetWorkingHoursByUserIdService = async (userId) => {
     }
   }
 
-  const workingHours = await WorkingHours.findOne({ user_id: userId });
+  const workingHours = await WorkingHours.findOne({
+    company_id: companyId,
+    user_id: userId,
+  });
   if (!workingHours) {
     throw new AppError("Working hours not configured for this user", 404);
   }
@@ -108,10 +127,13 @@ export const GetWorkingHoursByUserIdService = async (userId) => {
   };
 };
 
-export const ResetAllWorkingHoursService = async () => {
-  const deleteResult = await WorkingHours.deleteMany({});
+export const ResetAllWorkingHoursService = async (req) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const deleteResult = await WorkingHours.deleteMany({ company_id: companyId });
   const updateResult = await Users.updateMany(
-    { role: { $ne: "admin" } },
+    { company_id: companyId, role: { $ne: "admin" } },
     { $set: { is_default_working_hours: true } }
   );
 

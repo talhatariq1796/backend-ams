@@ -10,6 +10,7 @@ import { NOTIFICATION_TYPES } from "../../constants/notificationTypes.js";
 import RecentRequests from "../../models/requests/recentRequest.model.js";
 import Teams from "../../models/team.model.js";
 import Users from "../../models/user.model.js";
+import { getCompanyId } from "../../utils/company.util.js";
 
 export const ApplyLeave = async (req, res) => {
   try {
@@ -24,12 +25,15 @@ export const ApplyLeave = async (req, res) => {
     }
 
     const leaveApplication = await LeaveService.ApplyLeaveService(
+      req,
       req.body,
-      req.user
+      req.user,
     );
 
     if (leaveApplication) {
+      const companyId = getCompanyId(req);
       await RecentRequests.create({
+        company_id: companyId || undefined,
         userId: isAdminApplyingForOther ? req.body.user : req.user._id,
         type: "leave",
         referenceId: leaveApplication._id,
@@ -48,10 +52,10 @@ export const ApplyLeave = async (req, res) => {
         if (req.user.role === "employee") {
           const team = await Teams.findById(req.user.team).populate(
             "leads",
-            "_id first_name last_name role"
+            "_id first_name last_name role",
           );
 
-          const leads = (team && team.leads) ? team.leads : [];
+          const leads = team && team.leads ? team.leads : [];
           if (leads.length > 0) {
             notification_to = leads[0]._id;
             if (leads.length > 1) {
@@ -74,7 +78,10 @@ export const ApplyLeave = async (req, res) => {
 
         if (targetUser) {
           employeeName = `${targetUser.first_name} ${targetUser.last_name}`;
-          const leads = (targetUser.team && targetUser.team.leads) ? targetUser.team.leads : [];
+          const leads =
+            targetUser.team && targetUser.team.leads
+              ? targetUser.team.leads
+              : [];
           if (leads.length > 0) {
             notification_to = leads[0]._id;
             if (leads.length > 1) {
@@ -133,10 +140,11 @@ export const UpdateLeaveStatus = async (req, res) => {
     const { status, rejection_reason } = req.body;
 
     const response = await LeaveService.UpdateLeaveStatusService(
+      req,
       leave_id,
       status,
       req.user,
-      rejection_reason
+      rejection_reason,
     );
     if (response) {
       console.log("response", response);
@@ -175,12 +183,13 @@ export const UpdateLeaveStatus = async (req, res) => {
 export const EditLeave = async (req, res) => {
   try {
     const editedLeave = await LeaveService.EditLeaveService(
+      req,
       req.params.leave_id,
       req.body,
-      req.user
+      req.user,
     );
 
-    await createLogsAndNotification({
+    createLogsAndNotification({
       notification_by: req.user._id,
       type: NOTIFICATION_TYPES.LEAVE,
       message:
@@ -216,15 +225,21 @@ export const DeleteLeave = async (req, res) => {
     checkUserAuthorization(req.user);
     const { leave_id } = req.params;
 
-    const response = await LeaveService.DeleteLeaveService(req.user, leave_id);
+    const response = await LeaveService.DeleteLeaveService(
+      req,
+      req.user,
+      leave_id,
+    );
 
     if (response) {
+      const companyId = getCompanyId(req);
       await RecentRequests.deleteOne({
+        ...(companyId && { company_id: companyId }),
         referenceId: leave_id,
         type: "leave",
       });
 
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.LEAVE_REQUEST,
         message: `deleted the leave request.`,
@@ -268,6 +283,7 @@ export const GetAllLeaveRequests = async (req, res) => {
     } = req.query;
 
     const response = await LeaveService.GetAllLeaveRequestsService(
+      req,
       req.user,
       view_scope,
       filter_type,
@@ -279,7 +295,7 @@ export const GetAllLeaveRequests = async (req, res) => {
       search,
       leave_type,
       page,
-      limit
+      limit,
     );
 
     return AppResponse({
@@ -323,7 +339,8 @@ export const GetAvailableLeaveTypes = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     const leaveTypes = await LeaveService.GetAvailableLeaveTypesService(
-      req.user
+      req,
+      req.user,
     );
     return AppResponse({
       res,
@@ -344,7 +361,10 @@ export const GetAvailableLeaveTypes = async (req, res) => {
 
 export const GetPendingLeaveCount = async (req, res, next) => {
   try {
-    const count = await LeaveService.GetPendingLeavesCountService(req.user);
+    const count = await LeaveService.GetPendingLeavesCountService(
+      req,
+      req.user,
+    );
     return AppResponse({
       res,
       message: "Pending leave count fetched successfully",

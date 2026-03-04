@@ -1,7 +1,7 @@
 import LeaveStats from "../models/leaveStats.model.js";
 import User from "../models/user.model.js";
 import Teams from "../models/team.model.js";
-import OfficeConfigs from "../models/config.model.js";
+import CompanyConfigs from "../models/config.model.js";
 import dayjs from "dayjs";
 import mongoose from "mongoose";
 import AppError from "../middlewares/error.middleware.js";
@@ -9,18 +9,22 @@ import {
   InitializeLeaveStatsForUser,
   AdjustLeaveStatsForUser,
 } from "../utils/leaveStats.util.js";
-import OfficeConfig from "../models/config.model.js";
 import { leaveSyncQueue } from "../jobs/leaveSync.queue.js";
+import { getCompanyId } from "../utils/company.util.js";
 
 /**
  * Get leave stats for a user. Initialize if not found.
  */
 export const GetLeaveStatsService = async (
+  req,
   userInfo,
   user_id = null,
   year = null,
 ) => {
   try {
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
     const targetYear = year || dayjs().year();
 
     // ✅ Determine which user's stats to fetch
@@ -33,22 +37,30 @@ export const GetLeaveStatsService = async (
           403,
         );
       }
-      targetUser = await User.findById(user_id);
+      targetUser = await User.findOne({ _id: user_id, company_id: companyId });
     } else {
-      targetUser = await User.findById(userInfo._id);
+      targetUser = await User.findOne({
+        _id: userInfo._id,
+        company_id: companyId,
+      });
     }
 
     if (!targetUser) throw new AppError("User not found", 404);
 
     // ✅ Try to get existing stats
     let stats = await LeaveStats.findOne({
+      company_id: companyId,
       user: targetUser._id,
       year: targetYear,
     });
 
     // ✅ Initialize stats if not found
     if (!stats) {
-      stats = await InitializeLeaveStatsForUser(targetUser._id, targetYear);
+      stats = await InitializeLeaveStatsForUser(
+        targetUser._id,
+        targetYear,
+        companyId,
+      );
     }
 
     // ✅ Convert to plain object
@@ -95,17 +107,22 @@ export const GetLeaveStatsService = async (
  * Get paginated leave stats for all users (optionally by department).
  */
 export const GetAllLeaveStatsService = async (
+  req,
   year = null,
   department_id = null,
   page = 1,
   limit = 10,
 ) => {
   try {
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
     const targetYear = year || dayjs().year();
-    let filter = { year: targetYear };
+    let filter = { company_id: companyId, year: targetYear };
 
     if (department_id && mongoose.Types.ObjectId.isValid(department_id)) {
       const teamsInDept = await Teams.find({
+        company_id: companyId,
         department: department_id,
       }).select("members");
       const userIdsInDept = teamsInDept.flatMap((team) =>
@@ -144,31 +161,37 @@ export const GetAllLeaveStatsService = async (
  * Sync all users' leave stats for a given year (reinitialize).
  */
 export const SyncAllLeaveStatsService = async (
+  req,
   year = null,
   updatedTypes = ["all"],
 ) => {
   try {
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
     const targetYear = year || dayjs().year();
 
-    let filter = {};
+    let filter = { company_id: companyId };
     if (
       updatedTypes.includes("general") &&
       !updatedTypes.includes("business")
     ) {
       // Non-business employees
-      filter = { designation: { $not: /business/i } };
+      filter = { company_id: companyId, designation: { $not: /business/i } };
     } else if (
       updatedTypes.includes("business") &&
       !updatedTypes.includes("general")
     ) {
       // Only business developers
-      filter = { designation: { $regex: /business/i } };
+      filter = { company_id: companyId, designation: { $regex: /business/i } };
     } // else both → no filter (all employees)
 
     const users = await User.find(filter).select("_id");
 
     const results = await Promise.all(
-      users.map((user) => RecalculateLeaveStatsForUser(user._id, targetYear)),
+      users.map((user) =>
+        RecalculateLeaveStatsForUser(req, user._id, targetYear),
+      ),
     );
 
     return { success: true, updatedCount: results.length, scope: updatedTypes };
@@ -177,13 +200,17 @@ export const SyncAllLeaveStatsService = async (
   }
 };
 
-export const EditLeaveStatsService = async (user_id, year, updates) => {
+export const EditLeaveStatsService = async (req, user_id, year, updates) => {
   try {
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
     const targetYear = year || dayjs().year();
 
     // ✅ CASE 1: Update individual user's leave stats
     if (user_id) {
       const leaveStats = await LeaveStats.findOne({
+        company_id: companyId,
         user: user_id,
         year: targetYear,
       });
@@ -226,8 +253,8 @@ export const EditLeaveStatsService = async (user_id, year, updates) => {
     }
 
     // ✅ CASE 2: Update company-wide leave types (general and/or business)
-    const config = await OfficeConfig.findOne();
-    if (!config) throw new AppError("Office configuration not found", 404);
+    const config = await CompanyConfigs.findOne({ company_id: companyId });
+    if (!config) throw new AppError("Company configuration not found", 404);
 
     const updateFields = [];
 
@@ -277,15 +304,18 @@ export const AdjustLeaveStatsService = async (
   return AdjustLeaveStatsForUser(user_id, year, leave_type, days, action);
 };
 
-export const RecalculateLeaveStatsForUser = async (user_id, year) => {
+export const RecalculateLeaveStatsForUser = async (req, user_id, year) => {
   try {
+    const companyId = req?.companyId || getCompanyId(req);
     const yearNum = Number(year);
     if (isNaN(yearNum)) throw new AppError("Invalid year format", 400);
 
-    const user = await User.findById(user_id);
+    const user = await User.findOne({ _id: user_id, company_id: companyId });
     if (!user) throw new AppError("User not found", 404);
 
-    const officeConfig = await OfficeConfigs.findOne();
+    const officeConfig = await CompanyConfigs.findOne({
+      company_id: companyId,
+    });
     if (!officeConfig) {
       throw new AppError("Office configuration not found", 500);
     }
@@ -327,6 +357,7 @@ export const RecalculateLeaveStatsForUser = async (user_id, year) => {
 
     // 🔹 Fetch existing stats to preserve taken leaves
     const existingStats = await LeaveStats.findOne({
+      company_id: companyId,
       user: user_id,
       year: yearNum,
     });
@@ -413,8 +444,9 @@ export const RecalculateLeaveStatsForUser = async (user_id, year) => {
     );
 
     const recalculatedStats = await LeaveStats.findOneAndUpdate(
-      { user: user_id, year: yearNum },
+      { company_id: companyId, user: user_id, year: yearNum },
       {
+        company_id: companyId,
         user: user_id,
         year: yearNum,
         leave_breakdown: leaveBreakdown,

@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 const CommentSchema = new mongoose.Schema(
   {
+    company_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company",
+      required: true,
+      index: true,
+    },
     suggestion: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Suggestion",
@@ -13,7 +19,12 @@ const CommentSchema = new mongoose.Schema(
       ref: "Users",
       required: true,
     },
+    role: { type: String },
   },
   { timestamps: true }
 );
+
+CommentSchema.index({ company_id: 1, suggestion: 1 });
+CommentSchema.index({ suggestion: 1 });
+
 export default mongoose.model("Comment", CommentSchema);

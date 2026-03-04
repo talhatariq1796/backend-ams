@@ -9,8 +9,13 @@ import mongoose from "mongoose";
 import { NOTIFICATION_TYPES } from "../constants/notificationTypes.js";
 import Like from "../models/likes.model.js";
 import Comment from "../models/comments.model.js";
+import { getCompanyId } from "../utils/company.util.js";
 
-export const CreateSuggestionService = async (user, suggestionData) => {
+export const CreateSuggestionService = async (req, suggestionData) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
   const {
     title,
     description,
@@ -44,6 +49,7 @@ export const CreateSuggestionService = async (user, suggestionData) => {
 
     if (allowedVisibility.length > 0) {
       const validDepartments = await Departments.find({
+        company_id: companyId,
         _id: { $in: allowedVisibility },
       });
 
@@ -52,7 +58,10 @@ export const CreateSuggestionService = async (user, suggestionData) => {
       }
     }
   } else {
-    const userTeam = await Team.findById(user.team).populate("department");
+    const userTeam = await Team.findOne({
+      _id: user.team,
+      company_id: companyId,
+    }).populate("department");
     if (!userTeam?.department?._id) {
       throw new AppError("User's department not found", 400);
     }
@@ -60,6 +69,7 @@ export const CreateSuggestionService = async (user, suggestionData) => {
   }
 
   const newSuggestion = new Suggestion({
+    company_id: companyId,
     title,
     description,
     image,
@@ -80,17 +90,28 @@ export const CreateSuggestionService = async (user, suggestionData) => {
 
   await newSuggestion.save();
 
-  return await Suggestion.findById(newSuggestion._id)
+  return await Suggestion.findOne({
+    _id: newSuggestion._id,
+    company_id: companyId,
+  })
     .populate("created_by", "first_name last_name")
     .populate("visible_to_departments", "name");
 };
 
 // Toggle like/unlike for a suggestion
-export const toggleLikeSuggestionService = async (suggestionId, user) => {
-  const suggestion = await Suggestion.findById(suggestionId);
+export const toggleLikeSuggestionService = async (req, suggestionId) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
+  const suggestion = await Suggestion.findOne({
+    _id: suggestionId,
+    company_id: companyId,
+  });
   if (!suggestion) throw new AppError("Suggestion not found", 404);
 
   const existingLike = await Like.findOne({
+    company_id: companyId,
     suggestion: suggestionId,
     user: user._id,
   });
@@ -109,6 +130,7 @@ export const toggleLikeSuggestionService = async (suggestionId, user) => {
   } else {
     // Add new like
     await Like.create({
+      company_id: companyId,
       suggestion: suggestionId,
       user: user._id,
     });
@@ -123,14 +145,22 @@ export const toggleLikeSuggestionService = async (suggestionId, user) => {
 
 // Add a comment to a suggestion
 export const addCommentToSuggestionService = async (
+  req,
   suggestionId,
-  user,
   text
 ) => {
-  const suggestion = await Suggestion.findById(suggestionId);
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
+  const suggestion = await Suggestion.findOne({
+    _id: suggestionId,
+    company_id: companyId,
+  });
   if (!suggestion) throw new AppError("Suggestion not found", 404);
 
   const comment = await Comment.create({
+    company_id: companyId,
     suggestion: suggestionId,
     text,
     created_by: user._id,
@@ -141,31 +171,35 @@ export const addCommentToSuggestionService = async (
   suggestion.comments_count += 1;
   await suggestion.save();
 
-  const populatedComment = await Comment.findById(comment._id)
+  const populatedComment = await Comment.findOne({
+    _id: comment._id,
+    company_id: companyId,
+  })
     .populate("created_by", "first_name last_name profile_picture role")
     .lean();
 
   return populatedComment;
 };
 
-export const deleteCommentService = async (suggestionId, commentId, user) => {
-  const comment = await Comment.findById(commentId);
+export const deleteCommentService = async (req, suggestionId, commentId) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
+  const comment = await Comment.findOne({
+    _id: commentId,
+    company_id: companyId,
+  });
   if (!comment) throw new AppError("Comment not found", 404);
 
-  // Check if user is the comment creator
   const isCommentOwner = String(comment.created_by) === String(user._id);
-
-  // If not admin and not the owner, deny access
   if (user.role !== "admin" && !isCommentOwner) {
     throw new AppError("You can only delete your own comments", 403);
   }
 
-  // If user is the owner (not admin), check if 15 minutes have passed
   if (isCommentOwner && user.role !== "admin") {
     const commentCreatedAt = new Date(comment.createdAt);
-    const now = new Date();
-    const minutesSinceCreation = (now - commentCreatedAt) / (1000 * 60);
-
+    const minutesSinceCreation = (Date.now() - commentCreatedAt) / (1000 * 60);
     if (minutesSinceCreation > 15) {
       throw new AppError(
         "You can only delete your own comments within 15 minutes of creation",
@@ -174,16 +208,26 @@ export const deleteCommentService = async (suggestionId, commentId, user) => {
     }
   }
 
-  await Comment.deleteOne({ _id: commentId });
+  await Comment.deleteOne({ _id: commentId, company_id: companyId });
 
-  await Suggestion.findByIdAndUpdate(suggestionId, {
-    $pull: { comments: commentId },
-    $inc: { comments_count: -1 },
-  });
+  await Suggestion.findOneAndUpdate(
+    { _id: suggestionId, company_id: companyId },
+    {
+      $pull: { comments: commentId },
+      $inc: { comments_count: -1 },
+    }
+  );
 };
 
-export const editCommentService = async (commentId, text, user) => {
-  const comment = await Comment.findById(commentId);
+export const editCommentService = async (req, commentId, text) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
+  const comment = await Comment.findOne({
+    _id: commentId,
+    company_id: companyId,
+  });
   if (!comment) throw new AppError("Comment not found", 404);
 
   // Check if user is the comment creator
@@ -215,22 +259,26 @@ export const editCommentService = async (commentId, text, user) => {
   return comment;
 };
 export const getLikesBySuggestionId = async (
+  req,
   suggestionId,
   page = 1,
   limit = 10,
   isAsc = false
 ) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const skip = (page - 1) * limit;
   const sortOrder = isAsc ? 1 : -1;
 
   const [likes, total] = await Promise.all([
-    Like.find({ suggestion: suggestionId })
+    Like.find({ company_id: companyId, suggestion: suggestionId })
       .populate("user", "first_name last_name email profile_picture role")
       .sort({ createdAt: sortOrder })
       .skip(skip)
       .limit(limit)
       .lean(),
-    Like.countDocuments({ suggestion: suggestionId }),
+    Like.countDocuments({ company_id: companyId, suggestion: suggestionId }),
   ]);
 
   return {
@@ -243,22 +291,26 @@ export const getLikesBySuggestionId = async (
 };
 
 export const getCommentsBySuggestionId = async (
+  req,
   suggestionId,
   page = 1,
   limit = 10,
   isAsc = false
 ) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const skip = (page - 1) * limit;
   const sortOrder = isAsc ? 1 : -1;
 
   const [data, total] = await Promise.all([
-    Comment.find({ suggestion: suggestionId })
+    Comment.find({ company_id: companyId, suggestion: suggestionId })
       .populate("created_by", "first_name last_name email profile_picture role")
       .sort({ createdAt: sortOrder })
       .skip(skip)
       .limit(limit)
       .lean(),
-    Comment.countDocuments({ suggestion: suggestionId }),
+    Comment.countDocuments({ company_id: companyId, suggestion: suggestionId }),
   ]);
 
   return {
@@ -271,11 +323,18 @@ export const getCommentsBySuggestionId = async (
 };
 
 export const EditSuggestionService = async (
-  user,
+  req,
   suggestionId,
   updatedSuggestionData
 ) => {
-  const existingSuggestion = await Suggestion.findById(suggestionId);
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
+  const existingSuggestion = await Suggestion.findOne({
+    _id: suggestionId,
+    company_id: companyId,
+  });
   if (!existingSuggestion) {
     throw new AppError("Suggestion not found.", 400);
   }
@@ -311,8 +370,8 @@ export const EditSuggestionService = async (
       );
   }
 
-  const updatedSuggestion = await Suggestion.findByIdAndUpdate(
-    suggestionId,
+  const updatedSuggestion = await Suggestion.findOneAndUpdate(
+    { _id: suggestionId, company_id: companyId },
     { ...updatedSuggestionData, updated_by: user._id },
     { new: true }
   );
@@ -332,13 +391,20 @@ export const GetSuggestionCategoriesService = async () => {
   }
 };
 
-export const GetNotRespondedSuggestionsCountService = async (user) => {
-  const filter = { is_responded: false };
+export const GetNotRespondedSuggestionsCountService = async (req) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
+  const filter = { company_id: companyId, is_responded: false };
 
   if (user.role === "admin") {
     // No filter needed
   } else if (user.role === "teamLead") {
-    const team = await Team.findById(user.team).select("members");
+    const team = await Team.findOne({
+      _id: user.team,
+      company_id: companyId,
+    }).select("members");
     const memberIds =
       team?.members.map((id) => new mongoose.Types.ObjectId(id)) || [];
     filter.created_by = { $in: memberIds };
@@ -351,11 +417,18 @@ export const GetNotRespondedSuggestionsCountService = async (user) => {
 };
 
 export const RespondToSuggestionService = async (
+  req,
   suggestionId,
-  message,
-  admin
+  message
 ) => {
-  const suggestion = await Suggestion.findById(suggestionId)
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const admin = req.user;
+  const suggestion = await Suggestion.findOne({
+    _id: suggestionId,
+    company_id: companyId,
+  })
     .populate({
       path: "created_by",
       select: "_id first_name last_name employee_id profile_picture team",
@@ -439,11 +512,18 @@ export const RespondToSuggestionService = async (
   };
 };
 export const EditResponseToSuggestionService = async (
+  req,
   suggestionId,
-  message,
-  admin
+  message
 ) => {
-  const suggestion = await Suggestion.findById(suggestionId);
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const admin = req.user;
+  const suggestion = await Suggestion.findOne({
+    _id: suggestionId,
+    company_id: companyId,
+  });
   if (!suggestion) {
     throw new AppError("Suggestion not found", 404);
   }
@@ -492,10 +572,17 @@ export const EditResponseToSuggestionService = async (
   };
 };
 export const DeleteResponseFromSuggestionService = async (
-  suggestionId,
-  admin
+  req,
+  suggestionId
 ) => {
-  const suggestion = await Suggestion.findById(suggestionId).populate({
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const admin = req.user;
+  const suggestion = await Suggestion.findOne({
+    _id: suggestionId,
+    company_id: companyId,
+  }).populate({
     path: "created_by",
     select: "_id first_name last_name",
   });
@@ -519,7 +606,7 @@ export const DeleteResponseFromSuggestionService = async (
 };
 
 export const GetAllSuggestionsService = async (
-  user,
+  req,
   filter_type,
   start_date,
   end_date,
@@ -531,6 +618,10 @@ export const GetAllSuggestionsService = async (
   category,
   department_id
 ) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
   const parsedLimit = parseInt(limit);
   const parsedPage = parseInt(page);
   const skip = (parsedPage - 1) * parsedLimit;
@@ -544,6 +635,7 @@ export const GetAllSuggestionsService = async (
     const searchRegex = new RegExp(search, "i");
 
     const matchedUsers = await Users.find({
+      company_id: companyId,
       $or: [
         { first_name: searchRegex },
         { last_name: searchRegex },
@@ -627,7 +719,10 @@ export const GetAllSuggestionsService = async (
 
     query.$and.push({ $or: visibilityConditions });
   } else {
-    const userTeam = await Team.findById(user.team).populate("department");
+    const userTeam = await Team.findOne({
+      _id: user.team,
+      company_id: companyId,
+    }).populate("department");
     const deptId = userTeam?.department?._id;
 
     if (!deptId) throw new AppError("User department not found", 400);
@@ -651,6 +746,7 @@ export const GetAllSuggestionsService = async (
   }
 
   // 📥 Fetch suggestions
+  query.company_id = companyId;
   const rawSuggestions = await Suggestion.find(query)
     .populate(
       "created_by",
@@ -694,8 +790,16 @@ export const GetAllSuggestionsService = async (
   };
 };
 
-export const deleteSuggestion = async (suggestionId, userId, role) => {
-  const suggestion = await Suggestion.findById(suggestionId);
+export const deleteSuggestion = async (req, suggestionId) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const userId = req.user._id;
+  const role = req.user.role;
+  const suggestion = await Suggestion.findOne({
+    _id: suggestionId,
+    company_id: companyId,
+  });
   if (!suggestion) {
     throw new AppError("Suggestion not found", 404);
   }
@@ -723,7 +827,10 @@ export const deleteSuggestion = async (suggestionId, userId, role) => {
     }
   }
 
-  const result = await Suggestion.findByIdAndDelete(suggestionId);
+  const result = await Suggestion.findOneAndDelete({
+    _id: suggestionId,
+    company_id: companyId,
+  });
   return result;
 };
 
@@ -772,8 +879,14 @@ const getDateRangeForTesting = (filter_type, now) => {
   return { startDate, endDate };
 };
 
-export const getCommentById = async (suggestionId, commentId) => {
-  const comment = await Comment.findById(commentId).lean();
+export const getCommentById = async (req, suggestionId, commentId) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const comment = await Comment.findOne({
+    _id: commentId,
+    company_id: companyId,
+  }).lean();
   if (!comment) return null;
 
   // Ensure the comment belongs to the suggestion
@@ -782,12 +895,18 @@ export const getCommentById = async (suggestionId, commentId) => {
   return comment;
 };
 
-export const getSuggestionById = async (suggestionId) => {
+export const getSuggestionById = async (req, suggestionId) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   if (!suggestionId || !mongoose.Types.ObjectId.isValid(suggestionId)) {
     throw new AppError("Suggestion ID is required", 400);
   }
 
-  const suggestion = await Suggestion.findById(suggestionId)
+  const suggestion = await Suggestion.findOne({
+    _id: suggestionId,
+    company_id: companyId,
+  })
     .populate(
       "created_by",
       "first_name last_name email role team profile_picture"
@@ -801,12 +920,12 @@ export const getSuggestionById = async (suggestionId) => {
   }
 
   const [likes, comments] = await Promise.all([
-    Like.find({ suggestion: suggestionId })
+    Like.find({ company_id: companyId, suggestion: suggestionId })
       .populate("user", "first_name last_name email profile_picture role")
       .sort({ created_at: -1 })
       .lean(),
 
-    Comment.find({ suggestion: suggestionId })
+    Comment.find({ company_id: companyId, suggestion: suggestionId })
       .populate("created_by", "first_name last_name email profile_picture role")
       .sort({ created_at: -1 })
       .lean(),
@@ -822,7 +941,13 @@ export const GetSuggestionLikes = async (req, res) => {
   try {
     const { suggestionId } = req.params;
 
-    const likes = await Like.find({ suggestion: suggestionId })
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
+    const likes = await Like.find({
+      company_id: companyId,
+      suggestion: suggestionId,
+    })
       .populate("user", "first_name last_name profile_picture role")
       .sort({ created_at: -1 });
 
@@ -851,13 +976,19 @@ export const GetSuggestionComments = async (req, res) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const sortOrder = isAsc === "true" ? 1 : -1;
 
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
     const [comments, total] = await Promise.all([
-      Comment.find({ suggestion: suggestionId })
+      Comment.find({ company_id: companyId, suggestion: suggestionId })
         .populate("created_by", "first_name last_name profile_picture role")
         .sort({ created_at: sortOrder })
         .skip(skip)
         .limit(parseInt(limit)),
-      Comment.countDocuments({ suggestion: suggestionId }),
+      Comment.countDocuments({
+        company_id: companyId,
+        suggestion: suggestionId,
+      }),
     ]);
 
     AppResponse({
@@ -884,9 +1015,8 @@ export const GetSuggestionComments = async (req, res) => {
 };
 
 export const GetUserSuggestionsService = async (
+  req,
   userId,
-  requestingUserId,
-  requestingUserRole,
   filter_type,
   start_date,
   end_date,
@@ -894,11 +1024,16 @@ export const GetUserSuggestionsService = async (
   limit = 10,
   is_responded
 ) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const requestingUserId = req.user._id;
+  const requestingUserRole = req.user.role;
   const parsedLimit = parseInt(limit);
   const parsedPage = parseInt(page);
   const skip = (parsedPage - 1) * parsedLimit;
 
-  let query = { created_by: userId };
+  let query = { company_id: companyId, created_by: userId };
 
   // Filter by response status
   if (typeof is_responded === "string") {
@@ -932,6 +1067,7 @@ export const GetUserSuggestionsService = async (
   }
 
   // Fetch suggestions
+  query.company_id = companyId;
   const rawSuggestions = await Suggestion.find(query)
     .populate(
       "created_by",

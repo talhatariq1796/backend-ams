@@ -2,7 +2,13 @@ import mongoose from "mongoose";
 
 const TicketSchema = new mongoose.Schema(
   {
-    ticket_id: { type: String, unique: true }, // TK-001
+    company_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Companies",
+      required: true,
+      index: true,
+    },
+    ticket_id: { type: String }, // TK-001 - will be unique per company
     title: { type: String, required: true },
     description: { type: String },
     status: {
@@ -42,5 +48,10 @@ const TicketSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Compound unique: ticket_id must be unique within a company
+TicketSchema.index({ company_id: 1, ticket_id: 1 }, { unique: true });
+// company_id already has index: true
+TicketSchema.index({ company_id: 1, status: 1 });
 
 export default mongoose.model("Ticket", TicketSchema);

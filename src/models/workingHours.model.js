@@ -3,6 +3,12 @@ import { DaySchema } from "../utils/schema.utils.js";
 
 const WorkingHoursSchema = mongoose.Schema(
   {
+    company_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Companies",
+      required: true,
+      index: true,
+    },
     user_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Users",
@@ -18,5 +24,8 @@ const WorkingHoursSchema = mongoose.Schema(
   },
   { timestamps: true }
 );
+
+WorkingHoursSchema.index({ company_id: 1, user_id: 1 }, { unique: true });
+// company_id already has index: true
 
 export default mongoose.model("WorkingHours", WorkingHoursSchema);

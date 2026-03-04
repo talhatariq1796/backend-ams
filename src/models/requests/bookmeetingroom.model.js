@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 const MeetingRoomSchema = new mongoose.Schema(
   {
+    company_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company",
+      required: true,
+      index: true,
+    },
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Users",
@@ -37,5 +43,8 @@ const MeetingRoomSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+MeetingRoomSchema.index({ company_id: 1, start_date: 1 });
+MeetingRoomSchema.index({ company_id: 1, user: 1 });
 
 export default mongoose.model("MeetingRoom", MeetingRoomSchema);

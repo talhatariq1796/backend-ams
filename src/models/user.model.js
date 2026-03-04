@@ -99,11 +99,25 @@ const UsersSchema = mongoose.Schema(
     //   enum: ["present", "awaiting", "leave", "wfh", "late"],
     //   default: "awaiting",
     // },
+    // Company/Tenant reference
+    company_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Companies",
+      required: true,
+      index: true,
+    },
+
     role: {
       type: String,
-      enum: ["admin", "teamLead", "manager", "employee"],
+      enum: ["super_admin", "admin", "teamLead", "employee", "manager"],
       required: true,
       default: "employee",
+    },
+
+    // Super admin flag (platform-level admin, not company admin)
+    is_super_admin: {
+      type: Boolean,
+      default: false,
     },
     employment_status: {
       type: String,
@@ -120,8 +134,8 @@ const UsersSchema = mongoose.Schema(
     employee_id: {
       type: String,
       required: true,
-      unique: true,
       match: [/^WB-[1-9]\d{0,2}$/, "Invalid employee ID format"],
+      // Note: Will add compound unique index with company_id after schema definition
     },
     password: { type: String, required: true },
     is_default_working_hours: { type: Boolean, default: true },
@@ -137,8 +151,20 @@ const UsersSchema = mongoose.Schema(
       type: Date,
       default: null,
     },
+    // Per-user permission overrides (admin can enable/disable specific permissions for a user).
+    // Effective permissions = role defaults from office config + these overrides (override wins).
+    // Stored as object: { permission_key: true|false }. Only keys that are explicitly overridden are present.
+    permission_overrides: {
+      type: Map,
+      of: Boolean,
+      default: () => new Map(),
+    },
   },
   { timestamps: true },
 );
+
+// Compound unique indexes for company-scoped uniqueness
+UsersSchema.index({ company_id: 1, employee_id: 1 }, { unique: true });
+UsersSchema.index({ company_id: 1, email: 1 }, { unique: true });
 
 export default mongoose.model("Users", UsersSchema);

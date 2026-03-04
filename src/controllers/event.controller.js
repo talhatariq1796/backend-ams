@@ -8,11 +8,11 @@ export const CreateEvent = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
-    const event = await EventService.CreateEventService(req.user, req.body);
+    const event = await EventService.CreateEventService(req, req.body);
 
     if (event.is_public) {
       if (event.is_public) {
-        await createLogsAndNotification({
+        createLogsAndNotification({
           notification_by: req.user._id,
           type: NOTIFICATION_TYPES.EVENT,
           message: `created an event ${event.title}`,
@@ -21,7 +21,7 @@ export const CreateEvent = async (req, res) => {
         });
       }
     } else {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.EVENT,
         message: `created an event ${event.title}`,
@@ -51,8 +51,8 @@ export const EditEvent = async (req, res) => {
 
     const { eventId } = req.params;
     const updatedEvent = await EventService.EditEventService(
+      req,
       eventId,
-      req.user,
       req.body
     );
 
@@ -77,10 +77,7 @@ export const GetFilteredEvents = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
 
-    const events = await EventService.GetFilteredEventsService(
-      req.user,
-      req.query
-    );
+    const events = await EventService.GetFilteredEventsService(req, req.query);
 
     return AppResponse({
       res,
@@ -117,10 +114,10 @@ export const DeleteEvent = async (req, res) => {
       throw new AppError("Event ID is required", 400);
     }
 
-    const deletedEvent = await EventService.DeleteEventService(eventId);
+    const deletedEvent = await EventService.DeleteEventService(req, eventId);
 
     if (deletedEvent) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         // notification_to: userId,
         type: NOTIFICATION_TYPES.EVENT,
@@ -152,6 +149,7 @@ export const GetUpcomingCelebrations = async (req, res) => {
     isAdmin(req.user);
     const { month } = req.query;
     const celebrations = await EventService.GetUpcomingCelebrationsService(
+      req,
       month
     );
 
@@ -180,8 +178,8 @@ export const AddPublicHolidaysController = async (req, res) => {
     const { year } = req.query;
 
     const result = await EventService.AddPublicHolidaysOfPakistanService(
-      year,
-      req.user
+      req,
+      year
     );
 
     return AppResponse({
@@ -205,15 +203,7 @@ export const GetTodayCelebrationAlerts = async (req, res) => {
   try {
     const { scope = "department", excludeDepartments = "" } = req.query;
 
-    const excludeArray = excludeDepartments
-      ? excludeDepartments.split(",").map((id) => id.trim())
-      : [];
-
-    const data = await EventService.GetTodayCelebrationAlertsService({
-      user: req.user,
-      scope,
-      excludeDepartments: excludeArray,
-    });
+    const data = await EventService.GetTodayCelebrationAlertsService(req);
 
     res.status(200).json({
       success: true,

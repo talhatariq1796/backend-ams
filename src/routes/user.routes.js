@@ -1,13 +1,14 @@
 import express from "express";
 import * as UserController from "../controllers/user.controller.js";
 import { authenticateToken } from "../middlewares/user.middleware.js";
-// import { cacheMiddleware } from "../middlewares/cache.middleware.js";
+import { requirePermission } from "../middlewares/permission.middleware.js";
 
 const UserRouter = express.Router();
 
 UserRouter.post(
   "/user/create",
-  // authenticateToken,
+  authenticateToken,
+  requirePermission("manage_agents"),
   UserController.Registration
 );
 UserRouter.post("/user/login", UserController.Login);
@@ -24,30 +25,31 @@ UserRouter.put("/user/reset-password/:token", UserController.ResetPassword);
 UserRouter.get(
   "/users",
   authenticateToken,
-  // cacheMiddleware("users_"),
+  requirePermission("manage_agents"),
   UserController.FetchAllUsers
 );
 UserRouter.get(
   "/users/employees",
   authenticateToken,
-  // cacheMiddleware("employees_"),
-
+  requirePermission("manage_agents"),
   UserController.FetchEmployees
 );
 UserRouter.get(
   "/users/employee/:employeeId",
   authenticateToken,
-  // cacheMiddleware("employee_"),
+  requirePermission("view_attendance_status"),
   UserController.FetchEmployee
 );
 UserRouter.delete(
   "/user/:userId",
   authenticateToken,
+  requirePermission("manage_agents"),
   UserController.DeleteUser
 );
 UserRouter.put(
   "/users/change-activation-status/:userId",
   authenticateToken,
+  requirePermission("manage_agents"),
   UserController.UpdateUserActivationStatus
 );
 
@@ -61,31 +63,58 @@ UserRouter.put(
 UserRouter.put(
   "/user/:userId",
   authenticateToken,
+  requirePermission("manage_agents"),
   UserController.UpdateUserByAdmin
 );
 
 UserRouter.get(
   "/users/admins",
   authenticateToken,
-  // cacheMiddleware("admins_"),
-
+  requirePermission("manage_agents"),
   UserController.FetchAllAdmins
 );
 
 UserRouter.put(
   "/users/update-role/:userId",
   authenticateToken,
+  requirePermission("manage_roles"),
   UserController.UpdateUserRole
 );
 
 UserRouter.get(
   "/users/employees/count",
   authenticateToken,
-  // cacheMiddleware("employee_count_"),
-
+  requirePermission("manage_agents"),
   UserController.CountEmployees
 );
 
-// UserRouter.post("/user/refresh-token", UserController.RefreshAccessToken);
+UserRouter.get(
+  "/users/:userId/permissions",
+  authenticateToken,
+  UserController.GetUserPermissions
+);
+UserRouter.get(
+  "/users/:userId/permission-changes",
+  authenticateToken,
+  UserController.GetRecentPermissionChanges
+);
+UserRouter.put(
+  "/users/:userId/permissions",
+  authenticateToken,
+  requirePermission("manage_user_permissions"),
+  UserController.UpdateUserPermissions
+);
+UserRouter.post(
+  "/users/:userId/permissions/undo",
+  authenticateToken,
+  requirePermission("manage_user_permissions"),
+  UserController.UndoPermissionChange
+);
+UserRouter.post(
+  "/users/:userId/permissions/revert",
+  authenticateToken,
+  requirePermission("manage_user_permissions"),
+  UserController.RevertUserPermissions
+);
 
 export { UserRouter };

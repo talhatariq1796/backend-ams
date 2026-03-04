@@ -5,7 +5,7 @@ import { createLogsAndNotification } from "../utils/logNotification.js";
 export const CreateTicket = async (req, res) => {
   try {
     const user = req.user;
-    const data = await TicketService.CreateTicketService(req.body, user);
+    const data = await TicketService.CreateTicketService(req, user);
 
     const notifyAdmins = !req.body.assigned_to;
     const assignees = Array.isArray(data.assigned_to)
@@ -17,12 +17,13 @@ export const CreateTicket = async (req, res) => {
     );
 
     if (notifyAdmins || notifyUsers.length > 0) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: user._id,
         type: NOTIFICATION_TYPES.TICKET,
         message: `created ticket: ${data.title}`,
         notifyAdmins,
         moreUsers: notifyUsers,
+        company_id: req.company_id,
       });
     }
 
@@ -40,7 +41,11 @@ export const CreateTicket = async (req, res) => {
 };
 export const GetAllTickets = async (req, res) => {
   try {
-    const data = await TicketService.GetAllTicketsService(req.query, req.user);
+    const data = await TicketService.GetAllTicketsService(
+      req,
+      req.query,
+      req.user
+    );
     res.status(200).json({
       success: true,
       message: "Tickets fetched successfully",
@@ -59,18 +64,19 @@ export const AssignTicket = async (req, res) => {
     const { assigned_to } = req.body;
     const user = req.user;
 
-    const data = await TicketService.AssignTicketService({
+    const data = await TicketService.AssignTicketService(req, {
       ticket_id,
       assigned_to,
       user,
     });
 
     if (assigned_to && String(assigned_to) !== String(user._id)) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: user._id,
         type: NOTIFICATION_TYPES.TICKET,
         message: `assigned you a ticket: ${data.title}`,
-        notifyUsers: [assigned_to],
+        moreUsers: [assigned_to],
+        company_id: req.company_id,
       });
     }
 
@@ -93,7 +99,7 @@ export const UpdateTicketStatus = async (req, res) => {
     const { status } = req.body;
     const user = req.user;
 
-    const ticket = await TicketService.UpdateTicketStatusService({
+    const ticket = await TicketService.UpdateTicketStatusService(req, {
       ticket_id,
       status,
       user,
@@ -120,11 +126,12 @@ export const UpdateTicketStatus = async (req, res) => {
     );
 
     if (notifyUsers.length > 0) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: user._id,
         type: NOTIFICATION_TYPES.TICKET,
         message,
         moreUsers: notifyUsers,
+        company_id: req.company_id,
       });
     }
 
@@ -146,7 +153,7 @@ export const EditTicket = async (req, res) => {
     const { ticket_id } = req.params;
     const user = req.user;
 
-    const data = await TicketService.EditTicketService({
+    const data = await TicketService.EditTicketService(req, {
       ticket_id,
       body: req.body,
       user,
@@ -164,11 +171,12 @@ export const EditTicket = async (req, res) => {
 
     notifyUsers = [...new Set(notifyUsers)];
     if (notifyUsers.length > 0) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: user._id,
         type: NOTIFICATION_TYPES.TICKET,
         message,
         moreUsers: notifyUsers,
+        company_id: req.company_id,
       });
     }
 
@@ -190,17 +198,20 @@ export const DeleteTicket = async (req, res) => {
     const { ticket_id } = req.params;
     const user = req.user;
 
-    const result = await TicketService.DeleteTicketService({
+    const result = await TicketService.DeleteTicketService(req, {
       ticket_id,
       user,
     });
 
     if (result.created_by && String(result.created_by) !== String(user._id)) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: user._id,
         type: NOTIFICATION_TYPES.TICKET,
         message: `deleted your ticket: ${result.title}`,
-        notifyUsers: [result.created_by],
+        moreUsers: Array.isArray(result.created_by)
+          ? result.created_by
+          : [result.created_by],
+        company_id: req.company_id,
       });
     }
 
@@ -218,7 +229,7 @@ export const DeleteTicket = async (req, res) => {
 
 export const GetTicketStatusCount = async (req, res) => {
   try {
-    const data = await TicketService.GetTicketStatusCountService(req.user);
+    const data = await TicketService.GetTicketStatusCountService(req, req.user);
     res.status(200).json({
       success: true,
       message: "Ticket status counts fetched successfully",

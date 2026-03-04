@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 const LeaveSchema = new mongoose.Schema(
   {
+    company_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Companies",
+      required: true,
+      index: true,
+    },
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Users",
@@ -80,5 +86,10 @@ const LeaveSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Indexes for faster queries
+// company_id already has index: true
+LeaveSchema.index({ company_id: 1, status: 1 });
+LeaveSchema.index({ company_id: 1, user: 1 });
 
 export default mongoose.model("Leaves", LeaveSchema);

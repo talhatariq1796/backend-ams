@@ -1,10 +1,14 @@
 import dayjs from "dayjs";
 import LeaveStats from "../models/leaveStats.model.js";
 import User from "../models/user.model.js";
-import OfficeConfigs from "../models/config.model.js";
+import CompanyConfigs from "../models/config.model.js";
 import AppError from "../middlewares/error.middleware.js";
 
-export const InitializeLeaveStatsForUser = async (user_id, year) => {
+export const InitializeLeaveStatsForUser = async (
+  user_id,
+  year,
+  company_id = null
+) => {
   try {
     const yearNum = Number(year);
     if (isNaN(yearNum)) throw new AppError("Invalid year format", 400);
@@ -12,7 +16,13 @@ export const InitializeLeaveStatsForUser = async (user_id, year) => {
     const user = await User.findById(user_id);
     if (!user) throw new AppError("User not found", 404);
 
-    const officeConfig = await OfficeConfigs.findOne();
+    // Use company_id from parameter or from user
+    const companyId = company_id || user.company_id;
+    if (!companyId) throw new AppError("Company ID required", 400);
+
+    const officeConfig = await CompanyConfigs.findOne({
+      company_id: companyId,
+    });
     if (!officeConfig) {
       throw new AppError("Office configuration not found", 500);
     }
@@ -108,15 +118,15 @@ export const InitializeLeaveStatsForUser = async (user_id, year) => {
       });
     }
 
-    // Check if stats already exist to avoid duplicate key errors
     let initializedStats = await LeaveStats.findOne({
+      company_id: companyId,
       user: user_id,
       year: yearNum,
     });
 
     if (!initializedStats) {
-      // Create new stats if they don't exist
       initializedStats = await LeaveStats.create({
+        company_id: companyId,
         user: user_id,
         year: yearNum,
         leave_breakdown: leaveBreakdown,
@@ -129,7 +139,6 @@ export const InitializeLeaveStatsForUser = async (user_id, year) => {
         last_updated: new Date(),
       });
     } else {
-      // Update existing stats if they exist but are incomplete
       initializedStats.leave_breakdown = leaveBreakdown;
       initializedStats.prorated_leave_entitlement = proratedLeave;
       initializedStats.remaining_leaves = proratedLeave;
@@ -156,7 +165,8 @@ export const AdjustLeaveStatsForUser = async (
   year,
   leave_type,
   days,
-  action
+  action,
+  company_id = null
 ) => {
   try {
     const yearNum = Number(year);
@@ -166,7 +176,15 @@ export const AdjustLeaveStatsForUser = async (
     const user = await User.findById(user_id);
     if (!user) throw new AppError("User not found", 404);
 
-    const stats = await LeaveStats.findOne({ user: user_id, year: yearNum });
+    // Use company_id from parameter or from user
+    const companyId = company_id || user.company_id;
+    if (!companyId) throw new AppError("Company ID required", 400);
+
+    const stats = await LeaveStats.findOne({
+      company_id: companyId,
+      user: user_id,
+      year: yearNum,
+    });
     if (!stats) throw new AppError("Leave stats not initialized for user", 404);
 
     const breakdown = stats.leave_breakdown[leave_type];

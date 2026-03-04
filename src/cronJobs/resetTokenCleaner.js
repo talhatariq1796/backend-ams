@@ -6,10 +6,8 @@ const cleanExpiredResetTokens = cron.schedule("55 23 * * *", async () => {
   try {
     const result = await Users.updateMany(
       {
-        $or: [
-          { reset_password_expires: { $lt: new Date() } },
-          { reset_password_token: { $ne: null } },
-        ],
+        reset_password_expires: { $lt: new Date() },
+        reset_password_token: { $ne: null },
       },
       {
         $set: {

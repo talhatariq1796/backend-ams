@@ -4,7 +4,7 @@ import AppError from "../middlewares/error.middleware.js";
 import Users from "../models/user.model.js";
 import admin from "firebase-admin";
 import { NOTIFICATION_TITLES } from "../constants/notificationTypes.js";
-import dayjs from "dayjs";
+import { getCompanyId } from "../utils/company.util.js";
 
 export const SendNotificationService = async ({
   notification_to,
@@ -12,8 +12,11 @@ export const SendNotificationService = async ({
   type,
   message,
   role,
+  companyId,
 }) => {
+  if (!companyId) throw new AppError("Company context required", 403);
   let notification = await Notification.create({
+    company_id: companyId,
     notification_to,
     notification_by,
     type,
@@ -140,11 +143,17 @@ export const SendNotificationService = async ({
   return notification;
 };
 
-export const GetUserNotificationsService = async ({ userId, page, limit }) => {
+export const GetUserNotificationsService = async (req) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const userId = req.user?._id;
+  const page = req.query?.page || 1;
+  const limit = req.query?.limit || 10;
   const skip = (page - 1) * parseInt(limit);
 
   const [notifications, total] = await Promise.all([
-    Notification.find({ notification_to: userId })
+    Notification.find({ company_id: companyId, notification_to: userId })
       .populate({
         path: "notification_by",
         select: "_id first_name last_name profile_picture",
@@ -153,15 +162,13 @@ export const GetUserNotificationsService = async ({ userId, page, limit }) => {
       .skip(skip)
       .limit(parseInt(limit))
       .lean(),
-    Notification.countDocuments({ notification_to: userId }),
+    Notification.countDocuments({
+      company_id: companyId,
+      notification_to: userId,
+    }),
   ]);
 
-  // ✅ Format createdAt here
-  const formattedNotifications = notifications.map((n) => ({
-    ...n,
-    createdAt: dayjs(n.createdAt).format("MMM DD, YYYY"), // e.g. "Sep 17, 2025"
-  }));
-
+  // Return notifications with ISO date format (no formatting)
   const totalPages = Math.ceil(total / limit);
   const currentPage = parseInt(page);
   const hasMorePages = totalPages > currentPage;
@@ -175,17 +182,25 @@ export const GetUserNotificationsService = async ({ userId, page, limit }) => {
   };
 };
 
-export const MarkAllNotificationsAsReadService = async (userId) => {
+export const MarkAllNotificationsAsReadService = async (req) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const userId = req.user?._id;
+
   await Notification.updateMany(
-    { notification_to: userId, read: false },
+    { company_id: companyId, notification_to: userId, read: false },
     { $set: { read: true } },
   );
 };
 
-export const MarkMultipleNotificationsAsReadService = async (
-  notificationIds,
-  userId,
-) => {
+export const MarkMultipleNotificationsAsReadService = async (req) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const userId = req.user?._id;
+  const { notificationIds } = req.body || {};
+
   if (!Array.isArray(notificationIds) || notificationIds.length === 0) {
     throw new AppError("No notification IDs provided", 400);
   }
@@ -199,6 +214,7 @@ export const MarkMultipleNotificationsAsReadService = async (
   }
 
   const notifications = await Notification.find({
+    company_id: companyId,
     _id: { $in: validIds },
   }).select("_id notification_to");
 
@@ -215,6 +231,7 @@ export const MarkMultipleNotificationsAsReadService = async (
 
   const result = await Notification.updateMany(
     {
+      company_id: companyId,
       _id: { $in: validIds },
       notification_to: userId,
       read: false,
@@ -225,8 +242,14 @@ export const MarkMultipleNotificationsAsReadService = async (
   return { modifiedCount: result.modifiedCount };
 };
 
-export const HasUnreadNotificationsService = async (userId) => {
+export const HasUnreadNotificationsService = async (req) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const userId = req.user?._id;
+
   const count = await Notification.countDocuments({
+    company_id: companyId,
     notification_to: userId,
     read: false,
   });

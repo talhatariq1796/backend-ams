@@ -17,9 +17,9 @@ export const CreateTodo = async (req, res, next) => {
       });
     }
 
-    const todo = await TodoService.CreateAdminTodoService(req.user, { title });
+    const todo = await TodoService.CreateAdminTodoService(req, { title });
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 201,
       message: "Todo created successfully.",
@@ -27,7 +27,7 @@ export const CreateTodo = async (req, res, next) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -40,9 +40,9 @@ export const GetTodos = async (req, res, next) => {
   try {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
-    const todos = await TodoService.GetAdminTodosService();
+    const todos = await TodoService.GetAdminTodosService(req);
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Todos fetched successfully.",
@@ -50,7 +50,7 @@ export const GetTodos = async (req, res, next) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -77,11 +77,12 @@ export const UpdateTodoStatus = async (req, res, next) => {
     }
 
     const updatedTodo = await TodoService.UpdateAdminTodoStatusService(
+      req,
       id,
       is_completed
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Todo status updated successfully.",
@@ -89,7 +90,7 @@ export const UpdateTodoStatus = async (req, res, next) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -103,16 +104,16 @@ export const DeleteTodo = async (req, res, next) => {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
     const { id } = req.params;
-    await TodoService.DeleteAdminTodoService(id);
+    await TodoService.DeleteAdminTodoService(req, id);
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Todo deleted successfully.",
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,

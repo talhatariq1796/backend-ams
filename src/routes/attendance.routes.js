@@ -1,5 +1,6 @@
 import express from "express";
 import { authenticateToken } from "../middlewares/user.middleware.js";
+import { requirePermission, requireAnyPermission } from "../middlewares/permission.middleware.js";
 import * as AttendanceController from "../controllers/attendance.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
@@ -14,18 +15,21 @@ AttendanceRouter.post(
 AttendanceRouter.post(
   "/attendance/admin-mark",
   authenticateToken,
+  requirePermission("save_all_attendance"),
   AttendanceController.MarkAttendanceByAdmin
 );
 
 AttendanceRouter.put(
   "/attendance/admin-edit",
   authenticateToken,
+  requireAnyPermission(["can_edit_all_attendance", "can_edit_team_attendance"]),
   AttendanceController.EditAttendanceByAdmin
 );
 
 AttendanceRouter.get(
   "/attendance",
   authenticateToken,
+  requirePermission("view_attendance_status"),
   // cacheMiddleware("attendance_all_"),
   AttendanceController.GetAttendanceRecords
 );
@@ -33,42 +37,42 @@ AttendanceRouter.get(
 AttendanceRouter.get(
   "/attendance/today",
   authenticateToken,
-  // cacheMiddleware("attendance_today_", 30), // cache for 30 seconds
+  requirePermission("view_attendance_status"),
   AttendanceController.GetTodaysAttendance
 );
 
 AttendanceRouter.get(
   "/attendance/history",
   authenticateToken,
-  // cacheMiddleware("attendance_history_"),
+  requirePermission("view_attendance_status"),
   AttendanceController.GetAttendanceHistory
 );
 
 AttendanceRouter.get(
   "/attendance/month-history",
   authenticateToken,
-  // cacheMiddleware("attendance_history_"),
+  requirePermission("view_attendance_status"),
   AttendanceController.GetMonthlyAttendance
 );
 
 AttendanceRouter.get(
   "/attendance/stats",
   authenticateToken,
-  // cacheMiddleware("attendance_stats_"),
+  requirePermission("view_attendance_status"),
   AttendanceController.GetAttendanceStats
 );
 
 AttendanceRouter.get(
   "/attendance/status-by-date",
   authenticateToken,
-  // cacheMiddleware("attendance_status_"),
+  requirePermission("view_attendance_status"),
   AttendanceController.GetAttendanceStatusByDate
 );
 
 AttendanceRouter.get(
   "/attendance/today-stats",
   authenticateToken,
-  // cacheMiddleware("attendance_status_"),
+  requirePermission("view_attendance_status"),
   AttendanceController.GetTodayAttendanceStats
 );
 
@@ -87,6 +91,7 @@ AttendanceRouter.get(
 AttendanceRouter.post(
   "/attendance/download-report",
   authenticateToken,
+  requirePermission("export_attendance_reports"),
   AttendanceController.DownloadAttendanceReport
 );
 

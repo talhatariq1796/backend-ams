@@ -4,7 +4,7 @@ import {
   checkUserAuthorization,
   isAdminOrTeamLead,
 } from "../utils/getUserRole.util.js";
-import redisClient from "../utils/redisClient.js";
+import { checkPermission } from "../utils/checkPermission.util.js";
 import { createLogsAndNotification } from "../utils/logNotification.js";
 import { NOTIFICATION_TYPES } from "../constants/notificationTypes.js";
 import { generateExcel, generatePDF } from "../utils/reportGenerator.util.js";
@@ -13,6 +13,12 @@ import Users from "../models/user.model.js";
 export const MarkAttendance = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
+
+    const { checkin, date, marked_by } = req.body;
+    if (typeof checkin === "undefined" || !date || !marked_by) {
+      throw new AppError("Missing required field", 400);
+    }
+    await checkPermission(req, checkin ? "check_in" : "can_check_out");
 
     // 🚫 Detect automation
     const userAgent = req.headers["user-agent"] || "";
@@ -28,14 +34,7 @@ export const MarkAttendance = async (req, res) => {
     // const fingerprint = req.headers["x-fingerprint"];
     // if (!fingerprint || fingerprint.length < 20) {
     //   throw new AppError("Missing or invalid fingerprint", 403);
-    // }
-
-    // Proceed
-    const { checkin, date, marked_by } = req.body;
-
-    if (typeof checkin === "undefined" || !date || !marked_by) {
-      throw new AppError("Missing required field", 400);
-    }
+    //     }
 
     const response = await AttendanceService.MarkAttendanceService(
       req,
@@ -68,15 +67,18 @@ export const MarkAttendance = async (req, res) => {
       message = checkin ? `checked in.` : `checked out.`;
     }
 
-    await createLogsAndNotification({
+    // Get company_id for notification
+    const companyId = req.company_id || req.user?.company_id;
+
+    createLogsAndNotification({
       notification_by: req.user._id,
       ...(notification_to && { notification_to }),
       type: NOTIFICATION_TYPES.ATTENDANCE,
       message,
       notifyAdmins,
+      company_id: companyId,
     });
 
-    await clearAttendanceCache(req.user._id);
     return AppResponse({
       res,
       statusCode: 201,
@@ -96,21 +98,24 @@ export const MarkAttendance = async (req, res) => {
 
 export const MarkAttendanceByAdmin = async (req, res) => {
   try {
-    isAdmin(req.user);
+    checkUserAuthorization(req.user);
     const { user_id, date, check_in, check_out, status } = req.body;
 
     if (!user_id || !date) {
       throw new AppError("user_id and date are required", 400);
     }
 
-    const attendance = await AttendanceService.MarkAttendanceByAdminService({
-      user_id,
-      date,
-      check_in,
-      check_out,
-      status,
-      marked_by: req.user._id,
-    });
+    const attendance = await AttendanceService.MarkAttendanceByAdminService(
+      req,
+      {
+        user_id,
+        date,
+        check_in,
+        check_out,
+        status,
+        marked_by: req.user._id,
+      },
+    );
 
     return AppResponse({
       res,
@@ -131,6 +136,7 @@ export const MarkAttendanceByAdmin = async (req, res) => {
 
 export const EditAttendanceByAdmin = async (req, res) => {
   try {
+    checkUserAuthorization(req.user);
     isAdminOrTeamLead(req.user);
 
     const { attendance_id, updates } = req.body;
@@ -138,11 +144,14 @@ export const EditAttendanceByAdmin = async (req, res) => {
       throw new AppError("Attendance id and updates are required", 400);
     }
 
-    const attendance = await AttendanceService.EditAttendanceByAdminService({
-      attendance_id,
-      updates,
-      updated_by: req.user._id,
-    });
+    const attendance = await AttendanceService.EditAttendanceByAdminService(
+      req,
+      {
+        attendance_id,
+        updates,
+        updated_by: req.user._id,
+      },
+    );
 
     return AppResponse({
       res,
@@ -178,7 +187,7 @@ export const GetAttendanceRecords = async (req, res) => {
       });
     }
 
-    const response = await AttendanceService.GetAttendanceRecordsService({
+    const response = await AttendanceService.GetAttendanceRecordsService(req, {
       employee_id,
       type,
       month,
@@ -213,6 +222,7 @@ export const GetTodaysAttendance = async (req, res) => {
     const { user_id } = req.query;
 
     const attendance = await AttendanceService.GetTodaysAttendanceService(
+      req,
       req.user,
       user_id,
     );
@@ -252,6 +262,7 @@ export const GetAttendanceHistory = async (req, res) => {
     } = req.query;
 
     const response = await AttendanceService.GetAttendanceHistoryService(
+      req,
       req.user,
       filter_type,
       start_date,
@@ -311,6 +322,7 @@ export const GetAttendanceStats = async (req, res) => {
     // }
 
     const response = await AttendanceService.GetAttendanceStatsService(
+      req,
       req.user,
       filter_type,
       user_id,
@@ -411,6 +423,7 @@ export const GetAttendanceStatusByDate = async (req, res) => {
     const queryUserId = user_id || req.user._id;
 
     const response = await AttendanceService.GetAttendanceStatusByDateService(
+      req,
       queryUserId,
       date,
     );
@@ -433,14 +446,31 @@ export const GetAttendanceStatusByDate = async (req, res) => {
 };
 
 export const clearAttendanceCache = async (userId) => {
-  try {
-    const keys = await redisClient.keys(`attendance_*${userId}*`);
-    if (keys.length) {
-      await redisClient.del(keys);
-    }
-  } catch (error) {
-    console.error("❌ Error clearing attendance cache:", error.message);
-  }
+  // REDIS DISABLED
+  // try {
+  //   // Check if Redis is connected before attempting operations
+  //   if (!redisClient.isOpen) {
+  //     console.warn("⚠️ Redis not connected, skipping cache clear");
+  //     return;
+  //   }
+
+  //   // Add timeout to prevent hanging
+  //   const timeoutPromise = new Promise((_, reject) => {
+  //     setTimeout(() => reject(new Error("Redis operation timeout")), 2000);
+  //   });
+
+  //   const keysPromise = redisClient.keys(`attendance_*${userId}*`);
+  //   const keys = await Promise.race([keysPromise, timeoutPromise]);
+
+  //   if (keys && keys.length) {
+  //     const delPromise = redisClient.del(keys);
+  //     await Promise.race([delPromise, timeoutPromise]);
+  //   }
+  // } catch (error) {
+  //   // Don't block the request if cache clearing fails
+  //   console.error("❌ Error clearing attendance cache:", error.message);
+  // }
+  console.log("⚠️ Redis is disabled - clearAttendanceCache skipped");
 };
 export const GetTodayAttendanceStats = async (req, res) => {
   try {
@@ -684,7 +714,7 @@ export const GetManagerTodayAttendance = async (req, res) => {
         search,
         page,
         limit,
-      }
+      },
     );
 
     return AppResponse({
@@ -714,10 +744,11 @@ export const GetManagerTodayAttendanceSummary = async (req, res) => {
 
     const { team_id } = req.query;
 
-    const summary = await AttendanceService.GetManagerTodayAttendanceSummaryService(
-      req.user,
-      team_id
-    );
+    const summary =
+      await AttendanceService.GetManagerTodayAttendanceSummaryService(
+        req.user,
+        team_id,
+      );
 
     return AppResponse({
       res,

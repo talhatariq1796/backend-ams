@@ -13,10 +13,10 @@ export const GetUserNotifications = async (req, res) => {
     }
 
     const notifications = await NotificationService.GetUserNotificationsService(
-      { userId, page, limit }
+      req
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Notifications retrieved successfully",
@@ -24,7 +24,7 @@ export const GetUserNotifications = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Something went wrong",
@@ -41,16 +41,16 @@ export const MarkAllNotificationsAsRead = async (req, res) => {
       throw new AppError("Invalid user ID", 400);
     }
 
-    await NotificationService.MarkAllNotificationsAsReadService(userId);
+    await NotificationService.MarkAllNotificationsAsReadService(req);
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "All notifications marked as read successfully.",
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Something went wrong",
@@ -69,12 +69,9 @@ export const MarkMultipleNotificationsAsRead = async (req, res) => {
     }
 
     const result =
-      await NotificationService.MarkMultipleNotificationsAsReadService(
-        notificationIds,
-        userId
-      );
+      await NotificationService.MarkMultipleNotificationsAsReadService(req);
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Notifications marked as read successfully.",
@@ -82,7 +79,7 @@ export const MarkMultipleNotificationsAsRead = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Something went wrong",
@@ -100,9 +97,9 @@ export const HasUnreadNotifications = async (req, res) => {
     }
 
     const notifications =
-      await NotificationService.HasUnreadNotificationsService(userId);
+      await NotificationService.HasUnreadNotificationsService(req);
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Unread notification status fetched successfully.",
@@ -110,7 +107,7 @@ export const HasUnreadNotifications = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Something went wrong",

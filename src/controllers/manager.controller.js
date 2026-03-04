@@ -1,6 +1,8 @@
 import * as ManagerService from "../services/manager.service.js";
 import { checkUserAuthorization } from "../utils/getUserRole.util.js";
 import { AppResponse } from "../middlewares/error.middleware.js";
+import { getCompanyId } from "../utils/company.util.js";
+import AppError from "../middlewares/error.middleware.js";
 
 /**
  * GET /managers
@@ -8,7 +10,9 @@ import { AppResponse } from "../middlewares/error.middleware.js";
  */
 export const GetAllManagers = async (req, res) => {
   try {
-    const managers = await ManagerService.GetAllManagersService();
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+    const managers = await ManagerService.GetAllManagersService(companyId);
     return AppResponse({
       res,
       statusCode: 200,
@@ -94,8 +98,10 @@ export const GetManagedTeamMembers = async (req, res) => {
 export const GetTeamManagers = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
     const { teamId } = req.params;
-    const managers = await ManagerService.GetTeamManagersService(teamId);
+    const managers = await ManagerService.GetTeamManagersService(teamId, companyId);
     return AppResponse({
       res,
       statusCode: 200,
@@ -131,8 +137,11 @@ export const GetMyTeams = async (req, res) => {
       });
     }
 
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
     const teams = await ManagerService.GetTeamsWhereUserIsLeadOrManagerService(
       req.user._id,
+      companyId,
     );
     return AppResponse({
       res,

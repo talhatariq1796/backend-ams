@@ -1,121 +1,123 @@
 import express from "express";
 import * as SuggestionController from "../controllers/suggestion.controller.js";
 import { authenticateToken } from "../middlewares/user.middleware.js";
+import { requirePermission, requireAnyPermission } from "../middlewares/permission.middleware.js";
 
 const SuggestionRouter = express.Router();
 
-// Create suggestion/post
 SuggestionRouter.post(
   "/suggestion/create",
   authenticateToken,
+  requirePermission("create_post"),
   SuggestionController.CreateSuggestion
 );
 
-// Get suggestions by user
 SuggestionRouter.get(
   "/suggestions/user/:userId",
   authenticateToken,
+  requirePermission("view_posts"),
   SuggestionController.GetUserSuggestions
 );
 
-// Edit suggestion (Admin only)
 SuggestionRouter.put(
   "/suggestion/:suggestionId",
   authenticateToken,
+  requireAnyPermission(["edit_own_post", "edit_any_post"]),
   SuggestionController.EditSuggestion
 );
 
-// Delete suggestion (Admin only)
 SuggestionRouter.delete(
   "/suggestion/:suggestionId",
   authenticateToken,
+  requireAnyPermission(["delete_own_post", "delete_any_post"]),
   SuggestionController.DeleteSuggestion
 );
 
-// Get all suggestions (Admin only)
 SuggestionRouter.get(
   "/suggestions",
   authenticateToken,
+  requirePermission("view_all_posts"),
   SuggestionController.GetAllSuggestions
 );
 
-// Get suggestion categories
 SuggestionRouter.get(
   "/suggestions/categories",
   authenticateToken,
+  requirePermission("view_post_categories"),
   SuggestionController.GetSuggestionCategories
 );
 
-// Respond to a suggestion (admin)
 SuggestionRouter.put(
   "/suggestions/respond/:suggestionId",
   authenticateToken,
+  requirePermission("respond_to_post"),
   SuggestionController.RespondToSuggestion
 );
-// Edit response to suggestion (Admin only)
 SuggestionRouter.put(
   "/suggestions/edit-response/:suggestionId",
   authenticateToken,
+  requirePermission("respond_to_post"),
   SuggestionController.EditResponseToSuggestion
 );
-// Delete response to a suggestion (Admin only)
 SuggestionRouter.delete(
   "/suggestions/delete-response/:suggestionId",
   authenticateToken,
+  requirePermission("respond_to_post"),
   SuggestionController.DeleteResponseFromSuggestion
 );
 
-// Not responded count
 SuggestionRouter.get(
   "/suggestion/not-responded-count",
   authenticateToken,
+  requirePermission("view_not_responded_posts_count"),
   SuggestionController.GetNotRespondedSuggestionsCount
 );
 
 SuggestionRouter.patch(
   "/suggestions/:suggestionId/toggle-like",
   authenticateToken,
+  requirePermission("like_post"),
   SuggestionController.ToggleLikeSuggestion
 );
 
-// Add a comment to suggestion/post
 SuggestionRouter.post(
   "/suggestions/:suggestionId/comments",
   authenticateToken,
+  requirePermission("add_post_comment"),
   SuggestionController.AddComment
 );
 
-// Delete a comment (Admin only)
 SuggestionRouter.delete(
   "/suggestions/:suggestionId/comments/:commentId",
   authenticateToken,
+  requireAnyPermission(["delete_own_post_comment", "delete_any_post_comment"]),
   SuggestionController.DeleteComment
 );
 
-// Edit a comment (Admin only)
 SuggestionRouter.put(
   "/suggestions/:suggestionId/comments/:commentId",
   authenticateToken,
+  requireAnyPermission(["edit_own_post_comment", "edit_any_post_comment"]),
   SuggestionController.EditComment
 );
-// Get likes for a suggestion
 SuggestionRouter.get(
   "/suggestions/:suggestionId/likes",
   authenticateToken,
+  requirePermission("view_post_likes"),
   SuggestionController.GetLikesForSuggestion
 );
 
-// Get comments for a suggestion
 SuggestionRouter.get(
   "/suggestions/:suggestionId/comments",
   authenticateToken,
+  requirePermission("view_post_comments"),
   SuggestionController.GetCommentsForSuggestion
 );
 
-// Get visible suggestions with filtering (includes category filter)
 SuggestionRouter.get(
   "/suggestions/visible",
   authenticateToken,
+  requirePermission("view_posts"),
   SuggestionController.GetVisibleSuggestions
 );
 

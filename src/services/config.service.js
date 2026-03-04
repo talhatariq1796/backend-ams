@@ -1,15 +1,27 @@
-import OfficeConfig from "../models/config.model.js";
+import CompanyConfigs from "../models/config.model.js";
 import AppError from "../middlewares/error.middleware.js";
 import { SyncAllLeaveStatsService } from "./leaveStats.service.js";
+import { getCompanyId } from "../utils/company.util.js";
 
-export const GetOfficeConfigService = async () => {
-  const config = await OfficeConfig.findOne();
+export const GetCompanyConfigService = async (companyId) => {
+  if (!companyId) {
+    throw new AppError("Company ID is required", 400);
+  }
+
+  const config = await CompanyConfigs.findOne({ company_id: companyId });
+  if (!config) {
+    throw new AppError("Company configuration not found", 404);
+  }
   return config;
 };
 
-export const UpdateOfficeConfigService = async (updatedData) => {
-  const config = await OfficeConfig.findOne();
-  if (!config) throw new AppError("Office configuration does not exist", 404);
+export const UpdateCompanyConfigService = async (companyId, updatedData) => {
+  if (!companyId) {
+    throw new AppError("Company ID is required", 400);
+  }
+
+  const config = await CompanyConfigs.findOne({ company_id: companyId });
+  if (!config) throw new AppError("Company configuration does not exist", 404);
 
   const updatePayload = {};
   const updatedTypes = [];
@@ -30,21 +42,32 @@ export const UpdateOfficeConfigService = async (updatedData) => {
     }
   }
 
-  const updatedConfig = await OfficeConfig.findOneAndUpdate(
-    {},
+  const updatedConfig = await CompanyConfigs.findOneAndUpdate(
+    { company_id: companyId },
     { $set: updatePayload },
     { new: true, runValidators: true }
   );
 
   // 🔹 Sync leave stats based on what was updated
   if (updatedTypes.length > 0) {
-    await SyncAllLeaveStatsService(null, updatedTypes);
+    // Create a mock req object with company_id for SyncAllLeaveStatsService
+    const mockReq = {
+      company_id: companyId,
+      user: {
+        company_id: companyId,
+      },
+    };
+    await SyncAllLeaveStatsService(mockReq, null, updatedTypes);
   }
 
   return updatedConfig;
 };
 
-export const CreateOfficeConfigService = async (configData) => {
+export const CreateCompanyConfigService = async (companyId, configData) => {
+  if (!companyId) {
+    throw new AppError("Company ID is required", 400);
+  }
+
   if (
     !configData.office_location?.latitude ||
     !configData.office_location?.longitude
@@ -59,29 +82,42 @@ export const CreateOfficeConfigService = async (configData) => {
     throw new AppError("Working hours are required", 400);
   }
 
-  const existingConfig = await OfficeConfig.findOne();
+  const existingConfig = await CompanyConfigs.findOne({
+    company_id: companyId,
+  });
   if (existingConfig) {
     throw new AppError(
-      "Office configuration already exists. Try to update instead.",
+      "Company configuration already exists. Try to update instead.",
       400
     );
   }
 
-  const newConfig = new OfficeConfig(configData);
+  const newConfig = new CompanyConfigs({
+    ...configData,
+    company_id: companyId,
+  });
   await newConfig.save();
   return newConfig;
 };
 
-export const GetAllowedIPsService = async () => {
-  const config = await OfficeConfig.findOne();
-  if (!config) throw new AppError("Office config not found", 404);
+export const GetAllowedIPsService = async (companyId) => {
+  if (!companyId) {
+    throw new AppError("Company ID is required", 400);
+  }
+
+  const config = await CompanyConfigs.findOne({ company_id: companyId });
+  if (!config) throw new AppError("Company config not found", 404);
 
   return Object.fromEntries(config.allowed_ips || []);
 };
 
-export const AddOrUpdateAllowedIPService = async (name, ip) => {
-  const config = await OfficeConfig.findOne();
-  if (!config) throw new AppError("Office config not found", 404);
+export const AddOrUpdateAllowedIPService = async (companyId, name, ip) => {
+  if (!companyId) {
+    throw new AppError("Company ID is required", 400);
+  }
+
+  const config = await CompanyConfigs.findOne({ company_id: companyId });
+  if (!config) throw new AppError("Company config not found", 404);
 
   if (!config.allowed_ips) {
     config.allowed_ips = new Map();
@@ -94,9 +130,13 @@ export const AddOrUpdateAllowedIPService = async (name, ip) => {
   return Object.fromEntries(config.allowed_ips);
 };
 
-export const DeleteAllowedIPService = async (name) => {
-  const config = await OfficeConfig.findOne();
-  if (!config) throw new AppError("Office config not found", 404);
+export const DeleteAllowedIPService = async (companyId, name) => {
+  if (!companyId) {
+    throw new AppError("Company ID is required", 400);
+  }
+
+  const config = await CompanyConfigs.findOne({ company_id: companyId });
+  if (!config) throw new AppError("Company config not found", 404);
 
   if (!config.allowed_ips.has(name)) {
     throw new AppError("IP with this name does not exist", 404);
@@ -107,10 +147,16 @@ export const DeleteAllowedIPService = async (name) => {
   return Object.fromEntries(config.allowed_ips);
 };
 
-export const GetSignupStatusService = async () => {
-  const config = await OfficeConfig.findOne().select("isSignup");
+export const GetSignupStatusService = async (companyId) => {
+  if (!companyId) {
+    throw new AppError("Company ID is required", 400);
+  }
+
+  const config = await CompanyConfigs.findOne({ company_id: companyId }).select(
+    "isSignup"
+  );
   if (!config) {
-    throw new AppError("Office configuration not found", 404);
+    throw new AppError("Company configuration not found", 404);
   }
   return { isSignup: config.isSignup };
 };

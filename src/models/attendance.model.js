@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 const AttendanceSchema = mongoose.Schema(
   {
+    company_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Companies",
+      required: true,
+      index: true,
+    },
     check_in: { type: Date },
     check_out: { type: Date },
     date: { type: Date },
@@ -59,5 +65,11 @@ const AttendanceSchema = mongoose.Schema(
   { timestamps: true }
 );
 
-AttendanceSchema.index({ user_id: 1, date: 1 }, { unique: true });
+// Compound unique index: user can only have one attendance per date within a company
+AttendanceSchema.index(
+  { company_id: 1, user_id: 1, date: 1 },
+  { unique: true }
+);
+// Index for faster queries (company_id already has index: true)
+
 export default mongoose.model("Attendances", AttendanceSchema);

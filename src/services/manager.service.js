@@ -5,10 +5,14 @@ import AppError from "../middlewares/error.middleware.js";
 import mongoose from "mongoose";
 
 /**
- * Get all users with role 'manager'
+ * Get all users with role 'manager' in the given company.
  */
-export const GetAllManagersService = async () => {
-  const managers = await Users.find({ role: "manager" }).select(
+export const GetAllManagersService = async (companyId) => {
+  if (!companyId) throw new AppError("Company context required", 403);
+  const managers = await Users.find({
+    company_id: companyId,
+    role: "manager",
+  }).select(
     "_id first_name last_name email employee_id profile_picture",
   );
 
@@ -30,10 +34,19 @@ export const GetManagedTeamsService = async (managerId, requestingUser) => {
     throw new AppError("You can only view your own teams", 403);
   }
 
-  const manager = await Users.findById(managerId);
+  const companyId = requestingUser?.company_id;
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const manager = await Users.findOne({
+    _id: managerId,
+    company_id: companyId,
+  });
   if (!manager) throw new AppError("Manager does not exist", 400);
 
-  const teams = await Teams.find({ managers: managerId })
+  const teams = await Teams.find({
+    company_id: companyId,
+    managers: managerId,
+  })
     .populate("department", "name")
     .populate("leads", "first_name last_name _id")
     .populate({
@@ -63,11 +76,19 @@ export const GetManagedTeamMembersService = async (managerId, requestingUser) =>
     throw new AppError("You can only view your own team members", 403);
   }
 
-  const manager = await Users.findById(managerId);
+  const companyId = requestingUser?.company_id;
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const manager = await Users.findOne({
+    _id: managerId,
+    company_id: companyId,
+  });
   if (!manager) throw new AppError("Manager does not exist", 400);
 
-  // Find all teams managed by this manager
-  const managedTeams = await Teams.find({ managers: managerId }).select("members");
+  const managedTeams = await Teams.find({
+    company_id: companyId,
+    managers: managerId,
+  }).select("members");
 
   if (managedTeams.length === 0) {
     throw new AppError("Manager is not managing any team", 404);
@@ -85,10 +106,13 @@ export const GetManagedTeamMembersService = async (managerId, requestingUser) =>
     throw new AppError("No members found in managed teams", 404);
   }
 
-  // Fetch only active member details (exclude the requesting manager)
+  const memberIdsArray = Array.from(memberIds).filter(
+    (id) => id.toString() !== requestingUser._id.toString(),
+  );
   const members = await Users.find({
-    _id: { $in: Array.from(memberIds), $ne: requestingUser._id },
-    is_active: true
+    company_id: companyId,
+    _id: { $in: memberIdsArray },
+    is_active: true,
   }).select(
     "first_name last_name email employee_id designation profile_picture team employment_status is_active"
   );
@@ -101,14 +125,18 @@ export const GetManagedTeamMembersService = async (managerId, requestingUser) =>
 };
 
 /**
- * Get all managers for a specific team
+ * Get all managers for a specific team (scoped to company).
  */
-export const GetTeamManagersService = async (teamId) => {
+export const GetTeamManagersService = async (teamId, companyId) => {
   if (!mongoose.Types.ObjectId.isValid(teamId)) {
     throw new AppError("Invalid team ID", 400);
   }
+  if (!companyId) throw new AppError("Company context required", 403);
 
-  const team = await Teams.findById(teamId).populate(
+  const team = await Teams.findOne({
+    _id: teamId,
+    company_id: companyId,
+  }).populate(
     "managers",
     "first_name last_name _id email",
   );
@@ -119,17 +147,21 @@ export const GetTeamManagersService = async (teamId) => {
 };
 
 /**
- * Verify if a user is a manager of a team
+ * Verify if a user is a manager of a team (scoped to company).
  */
-export const IsManagerOfTeamService = async (userId, teamId) => {
+export const IsManagerOfTeamService = async (userId, teamId, companyId) => {
   if (
     !mongoose.Types.ObjectId.isValid(userId) ||
     !mongoose.Types.ObjectId.isValid(teamId)
   ) {
     throw new AppError("Invalid user or team ID", 400);
   }
+  if (!companyId) throw new AppError("Company context required", 403);
 
-  const team = await Teams.findById(teamId);
+  const team = await Teams.findOne({
+    _id: teamId,
+    company_id: companyId,
+  });
   if (!team) throw new AppError("Team does not exist", 400);
 
   const isManager = team.managers.some((m) => m.equals(userId));
@@ -137,14 +169,16 @@ export const IsManagerOfTeamService = async (userId, teamId) => {
 };
 
 /**
- * Get all teams where user is either a lead or manager
+ * Get all teams where user is either a lead or manager (scoped to company).
  */
-export const GetTeamsWhereUserIsLeadOrManagerService = async (userId) => {
+export const GetTeamsWhereUserIsLeadOrManagerService = async (userId, companyId) => {
   if (!mongoose.Types.ObjectId.isValid(userId)) {
     throw new AppError("Invalid user ID", 400);
   }
+  if (!companyId) throw new AppError("Company context required", 403);
 
   const teams = await Teams.find({
+    company_id: companyId,
     $or: [{ leads: userId }, { managers: userId }],
   })
     .populate("department", "name")

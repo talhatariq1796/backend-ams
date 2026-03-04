@@ -6,13 +6,25 @@ import AppError from "../../middlewares/error.middleware.js";
 import mongoose from "mongoose";
 import Teams from "../../models/team.model.js";
 import { getPagination } from "../../utils/pagination.util.js";
+import { getCompanyId } from "../../utils/company.util.js";
 
-export const createRequest = async (workingHourData) => {
-  return await WorkingHoursRequest.create(workingHourData);
+export const createRequest = async (req, workingHourData) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+  return await WorkingHoursRequest.create({
+    ...workingHourData,
+    company_id: companyId,
+  });
 };
 
-export const deleteRequest = async (requestId, userId, userRole) => {
-  const workingHour = await WorkingHoursRequest.findOne({ _id: requestId });
+export const deleteRequest = async (req, requestId, userId, userRole) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const workingHour = await WorkingHoursRequest.findOne({
+    _id: requestId,
+    company_id: companyId,
+  });
 
   if (!workingHour) {
     throw new AppError("Request not found", 400);
@@ -29,22 +41,59 @@ export const deleteRequest = async (requestId, userId, userRole) => {
     throw new AppError("Cannot delete request after approval/rejection", 400);
   }
 
-  return await WorkingHoursRequest.findByIdAndDelete(requestId);
+  return await WorkingHoursRequest.findOneAndDelete({
+    _id: requestId,
+    company_id: companyId,
+  });
 };
 
 export const changeRequestStatus = async (
+  req,
   requestId,
   status,
   action_taken_by,
-  rejectionReason
+  rejectionReason,
 ) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const workingHourRequest = await WorkingHoursRequest.findOne({
     _id: requestId,
+    company_id: companyId,
     status: "pending",
   });
 
   if (!workingHourRequest) {
     throw new AppError("Request not found or already processed", 400);
+  }
+
+  const userInfo = req.user;
+  if (userInfo && userInfo.role === "teamLead") {
+    const teamsLed = await Teams.find({
+      company_id: companyId,
+      lead: userInfo._id,
+    }).select("members");
+    if (!teamsLed.length) {
+      throw new AppError("You are not leading any team", 403);
+    }
+    const allMemberIds = teamsLed.flatMap((t) =>
+      (t.members || []).map((m) => m.toString()),
+    );
+    if (!allMemberIds.includes(workingHourRequest.user_id.toString())) {
+      throw new AppError(
+        "You can only approve or reject working hours requests of your team members",
+        403,
+      );
+    }
+  } else if (
+    userInfo &&
+    userInfo.role !== "admin" &&
+    !userInfo.is_super_admin
+  ) {
+    throw new AppError(
+      "You are not authorized to approve or reject working hours requests",
+      403,
+    );
   }
 
   const updatedFields = {
@@ -60,35 +109,37 @@ export const changeRequestStatus = async (
     await Promise.all([
       WorkingHours.updateOne(
         {
+          company_id: companyId,
           user_id: workingHourRequest.user_id,
           // start_date: workingHourRequest.start_date,
           // end_date: workingHourRequest.end_date,
         },
         {
           $set: {
+            company_id: companyId,
             is_week_custom_working_hours:
               workingHourRequest.is_week_custom_working_hours,
             checkin_time: workingHourRequest.checkin_time,
             checkout_time: workingHourRequest.checkout_time,
             custom_working_hours: workingHourRequest.custom_working_hours,
             expiry_date: new Date(
-              new Date(workingHourRequest.end_date).setHours(23, 59, 59, 999)
+              new Date(workingHourRequest.end_date).setHours(23, 59, 59, 999),
             ),
           },
         },
-        { upsert: true }
+        { upsert: true },
       ),
       Users.updateOne(
-        { _id: workingHourRequest.user_id },
-        { $set: { is_default_working_hours: false } }
+        { _id: workingHourRequest.user_id, company_id: companyId },
+        { $set: { is_default_working_hours: false } },
       ),
     ]);
   }
 
-  const updatedRequest = await WorkingHoursRequest.findByIdAndUpdate(
-    requestId,
+  const updatedRequest = await WorkingHoursRequest.findOneAndUpdate(
+    { _id: requestId, company_id: companyId },
     updatedFields,
-    { new: true }
+    { new: true },
   ).populate({
     path: "user_id",
     select: "_id first_name last_name employee_id team profile_picture",
@@ -126,28 +177,32 @@ export const changeRequestStatus = async (
 };
 
 export const getUserRequests = async (
+  req,
   userId,
   filter_type,
   start_date,
   end_date,
   statusType,
   page = 1,
-  limit = 10
+  limit = 10,
 ) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   if (!userId) {
     return { message: "User ID is required." };
   }
 
   try {
     const objectUserId = new mongoose.Types.ObjectId(userId);
-    let filter = { user_id: objectUserId };
+    let filter = { company_id: companyId, user_id: objectUserId };
 
     if (filter_type) {
       try {
         const { startDate, endDate } = getDateRangeFromFilter(
           filter_type,
           start_date,
-          end_date
+          end_date,
         );
         filter.createdAt = { $gte: startDate, $lte: endDate };
       } catch (error) {
@@ -204,6 +259,7 @@ export const getUserRequests = async (
 };
 
 export const GetAllUserRequestsService = async (
+  req,
   userInfo,
   view_scope = "self",
   filter_type,
@@ -214,17 +270,20 @@ export const GetAllUserRequestsService = async (
   department_id,
   search = "",
   page = 1,
-  limit = 10
+  limit = 10,
 ) => {
   try {
-    const match = {};
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
+    const match = { company_id: companyId };
 
     // Apply date filtering
     if (filter_type) {
       const { startDate, endDate } = getDateRangeFromFilter(
         filter_type,
         start_date,
-        end_date
+        end_date,
       );
       match.createdAt = { $gte: startDate, $lte: endDate };
     }
@@ -265,7 +324,7 @@ export const GetAllUserRequestsService = async (
       teamsManagedByUser.forEach((team) => {
         if (team.members && team.members.length > 0) {
           teamMemberIds.push(
-            ...team.members.map((m) => new mongoose.Types.ObjectId(m))
+            ...team.members.map((m) => new mongoose.Types.ObjectId(m)),
           );
         }
       });
@@ -296,9 +355,10 @@ export const GetAllUserRequestsService = async (
       }
     } else if (userInfo.role === "teamLead") {
       // ✅ Find all teams where this user is the lead
-      const teamsLedByUser = await Teams.find({ leads: userInfo._id }).select(
-        "members"
-      );
+      const teamsLedByUser = await Teams.find({
+        company_id: companyId,
+        lead: userInfo._id,
+      }).select("members");
 
       if (!teamsLedByUser || teamsLedByUser.length === 0) {
         throw new AppError("No teams found for this team lead", 404);
@@ -309,7 +369,7 @@ export const GetAllUserRequestsService = async (
       teamsLedByUser.forEach((team) => {
         if (team.members && team.members.length > 0) {
           teamMemberIds.push(
-            ...team.members.map((m) => new mongoose.Types.ObjectId(m))
+            ...team.members.map((m) => new mongoose.Types.ObjectId(m)),
           );
         }
       });
@@ -353,8 +413,8 @@ export const GetAllUserRequestsService = async (
       }).select("members");
       const userIdsInDept = teamsInDept.flatMap((team) =>
         team.members.map(
-          (member) => new mongoose.Types.ObjectId(member?.toString())
-        )
+          (member) => new mongoose.Types.ObjectId(member?.toString()),
+        ),
       );
 
       if (userIdsInDept.length > 0) {
@@ -363,7 +423,7 @@ export const GetAllUserRequestsService = async (
         } else if (match.user_id.$in) {
           match.user_id = {
             $in: userIdsInDept.filter((id) =>
-              match.user_id.$in.some((uid) => uid.equals(id))
+              match.user_id.$in.some((uid) => uid.equals(id)),
             ),
           };
         } else if (!userIdsInDept.some((id) => id.equals(match.user_id))) {
@@ -410,7 +470,9 @@ export const GetAllUserRequestsService = async (
 
     if (search.trim()) {
       // Escape special regex characters and search in concatenated full name
-      const escapedSearch = search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const escapedSearch = search
+        .trim()
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const searchRegex = new RegExp(escapedSearch, "i");
       pipeline.push({
         $match: {
@@ -474,7 +536,7 @@ export const GetAllUserRequestsService = async (
             team_name: 1,
           },
         },
-      }
+      },
     );
 
     const requests = await WorkingHoursRequest.aggregate(pipeline);
@@ -494,22 +556,25 @@ export const GetAllUserRequestsService = async (
   }
 };
 
-export const GetPendingWorkingHoursCountService = async (user) => {
-  const filter = { status: "pending" };
+export const GetPendingWorkingHoursCountService = async (req, user) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const filter = { company_id: companyId, status: "pending" };
 
   if (user.role === "admin") {
     // Admin → all
   } else if (user.role === "manager") {
     // Manager → pending requests from their managed teams
     const teamsManagedByUser = await Teams.find({ managers: user._id }).select(
-      "members"
+      "members",
     );
 
     let memberIds = [];
     teamsManagedByUser.forEach((team) => {
       if (team.members?.length) {
         memberIds.push(
-          ...team.members.map((id) => new mongoose.Types.ObjectId(id))
+          ...team.members.map((id) => new mongoose.Types.ObjectId(id)),
         );
       }
     });
@@ -520,15 +585,16 @@ export const GetPendingWorkingHoursCountService = async (user) => {
 
     filter.user_id = { $in: memberIds };
   } else if (user.role === "teamLead") {
-    const teamsLedByUser = await Teams.find({ leads: user._id }).select(
-      "members"
-    );
+    const teamsLedByUser = await Teams.find({
+      company_id: companyId,
+      lead: user._id,
+    }).select("members");
 
     let memberIds = [];
     teamsLedByUser.forEach((team) => {
       if (team.members?.length) {
         memberIds.push(
-          ...team.members.map((id) => new mongoose.Types.ObjectId(id))
+          ...team.members.map((id) => new mongoose.Types.ObjectId(id)),
         );
       }
     });
@@ -548,20 +614,27 @@ export const GetPendingWorkingHoursCountService = async (user) => {
 
 // Shared edit function for both admin and user edits
 const editWorkingHoursRequest = async (
+  req,
   requestId,
   editData,
   editorInfo,
-  isAdminEdit = false
+  isAdminEdit = false,
 ) => {
+  const companyId = req?.companyId || getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const request = await WorkingHoursRequest.findById(requestId)
+    const request = await WorkingHoursRequest.findOne({
+      _id: requestId,
+      company_id: companyId,
+    })
       .session(session)
       .populate(
         "user_id",
-        "_id first_name last_name employee_id team profile_picture"
+        "_id first_name last_name employee_id team profile_picture",
       );
 
     if (!request) {
@@ -638,6 +711,7 @@ const editWorkingHoursRequest = async (
       if (!isAdminEdit) {
         const existingOverlap = await WorkingHoursRequest.findOne({
           _id: { $ne: requestId },
+          company_id: companyId,
           user_id: request.user_id._id,
           status: { $ne: "rejected" },
           $or: [
@@ -651,7 +725,7 @@ const editWorkingHoursRequest = async (
         if (existingOverlap) {
           throw new AppError(
             "You already have another request for this date range.",
-            400
+            400,
           );
         }
       }
@@ -673,7 +747,7 @@ const editWorkingHoursRequest = async (
         request.end_date = new Date(filteredEditData.end_date);
         if (!request.until_i_change) {
           request.expiry_date = new Date(
-            new Date(request.end_date).setHours(23, 59, 59, 999)
+            new Date(request.end_date).setHours(23, 59, 59, 999),
           );
         }
       }
@@ -698,7 +772,7 @@ const editWorkingHoursRequest = async (
         request.expiry_date = null;
       } else if (request.end_date) {
         request.expiry_date = new Date(
-          new Date(request.end_date).setHours(23, 59, 59, 999)
+          new Date(request.end_date).setHours(23, 59, 59, 999),
         );
       }
     }
@@ -719,8 +793,8 @@ const editWorkingHoursRequest = async (
         filteredEditData.status === "rejected"
           ? filteredEditData.rejection_reason
           : filteredEditData.status === "approved"
-          ? undefined
-          : request.rejection_reason;
+            ? undefined
+            : request.rejection_reason;
     }
 
     // Calculate total_days if dates are available
@@ -739,7 +813,7 @@ const editWorkingHoursRequest = async (
       ) {
         throw new AppError(
           "Custom working hours must be provided and cannot be empty",
-          400
+          400,
         );
       }
     } else {
@@ -782,16 +856,16 @@ const editWorkingHoursRequest = async (
                 checkout_time: request.checkout_time,
                 custom_working_hours: request.custom_working_hours,
                 expiry_date: new Date(
-                  new Date(request.end_date).setHours(23, 59, 59, 999)
+                  new Date(request.end_date).setHours(23, 59, 59, 999),
                 ),
               },
             },
-            { upsert: true, session }
+            { upsert: true, session },
           ),
           Users.updateOne(
             { _id: request.user_id._id },
             { $set: { is_default_working_hours: false } },
-            { session }
+            { session },
           ),
         ]);
       }
@@ -802,7 +876,10 @@ const editWorkingHoursRequest = async (
 
     // Return populated request with team info for user edits
     const populatedRequest = !isAdminEdit
-      ? await WorkingHoursRequest.findById(requestId).populate({
+      ? await WorkingHoursRequest.findOne({
+          _id: requestId,
+          company_id: companyId,
+        }).populate({
           path: "user_id",
           select: "_id first_name last_name employee_id team profile_picture",
           populate: {
@@ -848,20 +925,38 @@ const editWorkingHoursRequest = async (
 
 // Simplified Admin Edit function
 export const AdminEditWorkingHoursRequest = async (
+  req,
   requestId,
   editData,
-  adminInfo
+  adminInfo,
 ) => {
-  return await editWorkingHoursRequest(requestId, editData, adminInfo, true);
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+  return await editWorkingHoursRequest(
+    req,
+    requestId,
+    editData,
+    adminInfo,
+    true,
+  );
 };
 
 // Simplified User Edit function
 export const UserEditWorkingHoursRequest = async (
+  req,
   requestId,
   editData,
-  userInfo
+  userInfo,
 ) => {
-  return await editWorkingHoursRequest(requestId, editData, userInfo, false);
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+  return await editWorkingHoursRequest(
+    req,
+    requestId,
+    editData,
+    userInfo,
+    false,
+  );
 };
 
 // Keep the existing checkOverlappingRequest function as is
@@ -869,8 +964,10 @@ export const checkOverlappingRequest = async ({
   user_id,
   start_date,
   end_date,
+  companyId,
 }) => {
   return await WorkingHoursRequest.findOne({
+    company_id: companyId,
     user_id,
     status: { $ne: "rejected" },
     $or: [

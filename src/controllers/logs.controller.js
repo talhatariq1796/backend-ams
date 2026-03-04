@@ -11,13 +11,13 @@ export const GetLogs = async (req, res) => {
     const { page = 1, limit = 10 } = req.query;
     const userId = req.user._id;
 
-    const logs = await LogsService.GetLogsService({
+    const logs = await LogsService.GetLogsService(req, {
       userId,
       page,
       limit,
     });
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Logs retrieved successfully",
@@ -25,7 +25,7 @@ export const GetLogs = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Something went wrong",

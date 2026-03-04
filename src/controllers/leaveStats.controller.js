@@ -7,6 +7,7 @@ export const GetUserLeaveStats = async (req, res) => {
     checkUserAuthorization(req.user);
     const { user_id, year } = req.query;
     const stats = await LeaveStatsService.GetLeaveStatsService(
+      req,
       req.user,
       user_id,
       year
@@ -34,6 +35,7 @@ export const GetAllLeaveStats = async (req, res) => {
     isAdmin(req.user);
     const { year, department_id, page = 1, limit = 10 } = req.query;
     const stats = await LeaveStatsService.GetAllLeaveStatsService(
+      req,
       year,
       department_id,
       parseInt(page),
@@ -86,7 +88,7 @@ export const SyncAllLeaveStats = async (req, res) => {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
     const { year } = req.query;
-    const result = await LeaveStatsService.SyncAllLeaveStatsService(year);
+    const result = await LeaveStatsService.SyncAllLeaveStatsService(req, year);
     return AppResponse({
       res,
       statusCode: 200,
@@ -117,6 +119,7 @@ export const EditLeaveStats = async (req, res) => {
     }
 
     const result = await LeaveStatsService.EditLeaveStatsService(
+      req,
       user_id,
       year,
       updates

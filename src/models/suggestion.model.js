@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 const SuggestionSchema = mongoose.Schema(
   {
+    company_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Companies",
+      required: true,
+      index: true,
+    },
     title: { type: String, required: true, trim: true, maxlength: 100 },
     description: { type: String, required: true, trim: true },
     image: { type: String, trim: false },
@@ -55,5 +61,9 @@ const SuggestionSchema = mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// company_id already has index: true
+SuggestionSchema.index({ company_id: 1, created_by: 1 });
+SuggestionSchema.index({ company_id: 1, is_responded: 1 });
 
 export default mongoose.model("suggestion", SuggestionSchema);

@@ -1,6 +1,11 @@
 import mongoose from "mongoose";
 
 const logSchema = new mongoose.Schema({
+  company_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Companies",
+    index: true,
+  },
   action_to: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",

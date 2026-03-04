@@ -7,6 +7,7 @@ import Departments from "../models/department.model.js";
 import Teams from "../models/team.model.js";
 import dayjs from "dayjs";
 import Suggestion from "../models/suggestion.model.js";
+import { getCompanyId } from "../utils/company.util.js";
 
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
@@ -14,7 +15,11 @@ import timezone from "dayjs/plugin/timezone.js";
 // Enable timezone plugins
 dayjs.extend(utc);
 dayjs.extend(timezone);
-export const CreateEventService = async (user, data) => {
+export const CreateEventService = async (req, data) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
   const {
     title,
     date,
@@ -34,6 +39,7 @@ export const CreateEventService = async (user, data) => {
   const startTimeDate = start_time ? new Date(start_time) : null;
   const endTimeDate = end_time ? new Date(end_time) : null;
   const conflict = await Event.findOne({
+    company_id: companyId,
     category: "office-event",
     $or: [
       {
@@ -50,11 +56,12 @@ export const CreateEventService = async (user, data) => {
   if (conflict) {
     throw new AppError(
       "An office event already exists during the selected time slot.",
-      409
+      409,
     );
   }
 
   const newEvent = new Event({
+    company_id: companyId,
     user_id: user._id,
     title,
     date: eventDate,
@@ -71,11 +78,19 @@ export const CreateEventService = async (user, data) => {
   return newEvent;
 };
 // services/event.service.js
-export const EditEventService = async (eventId, user, updatedData) => {
-  const existingEvent = await Event.findById(eventId);
+export const EditEventService = async (req, eventId, updatedData) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const existingEvent = await Event.findOne({
+    _id: eventId,
+    company_id: companyId,
+  });
   if (!existingEvent) {
     throw new AppError("Event not found", 404);
   }
+
+  const user = req.user;
 
   if (
     user.role !== "admin" &&
@@ -101,6 +116,7 @@ export const EditEventService = async (eventId, user, updatedData) => {
 
     const conflict = await Event.findOne({
       _id: { $ne: eventId },
+      company_id: companyId,
       category: "office-event",
       $or: [
         {
@@ -117,7 +133,7 @@ export const EditEventService = async (eventId, user, updatedData) => {
     if (conflict) {
       throw new AppError(
         "Another office event conflicts with the new timing.",
-        409
+        409,
       );
     }
   }
@@ -128,10 +144,14 @@ export const EditEventService = async (eventId, user, updatedData) => {
   return saved;
 };
 
-export const GetFilteredEventsService = async (user, query) => {
+export const GetFilteredEventsService = async (req, query) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
   const { month, year, is_public, category, title } = query;
 
-  const filter = {};
+  const filter = { company_id: companyId };
 
   // For non-admin users, include:
   // 1. Public events
@@ -173,12 +193,18 @@ export const GetEventCategoriesService = async () => {
   return enumValues;
 };
 
-export const DeleteEventService = async (eventId) => {
+export const DeleteEventService = async (req, eventId) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   if (!mongoose.Types.ObjectId.isValid(eventId)) {
     throw new AppError("Invalid event ID", 400);
   }
 
-  const deletedEvent = await Event.findByIdAndDelete(eventId);
+  const deletedEvent = await Event.findOneAndDelete({
+    _id: eventId,
+    company_id: companyId,
+  });
 
   if (!deletedEvent) {
     throw new AppError("Event not found", 404);
@@ -187,8 +213,11 @@ export const DeleteEventService = async (eventId) => {
   return deletedEvent;
 };
 
-export const GetUpcomingCelebrationsService = async (month) => {
+export const GetUpcomingCelebrationsService = async (req, month) => {
   try {
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
     const currentYear = new Date().getFullYear();
     const currentMonth = new Date().getMonth() + 1;
     const filterMonth = month ? parseInt(month) : currentMonth;
@@ -198,13 +227,14 @@ export const GetUpcomingCelebrationsService = async (month) => {
     }
 
     const users = await Users.find({
+      company_id: companyId,
       is_active: true,
       $or: [
         { date_of_birth: { $exists: true } },
         { joining_date: { $exists: true } },
       ],
     }).select(
-      "first_name last_name profile_picture employee_id date_of_birth joining_date designation"
+      "first_name last_name profile_picture employee_id date_of_birth joining_date designation",
     );
 
     if (!users || users.length === 0) {
@@ -251,10 +281,11 @@ export const GetUpcomingCelebrationsService = async (month) => {
     const endOfMonth = new Date(currentYear, filterMonth, 0, 23, 59, 59, 999);
 
     const rawEvents = await Event.find({
+      company_id: companyId,
       date: { $gte: startOfMonth, $lte: endOfMonth },
     }).populate(
       "user_id",
-      "first_name last_name profile_picture employee_id designation"
+      "first_name last_name profile_picture employee_id designation",
     );
 
     const events = rawEvents.map((event) => {
@@ -277,7 +308,11 @@ export const GetUpcomingCelebrationsService = async (month) => {
   }
 };
 
-export const AddPublicHolidaysOfPakistanService = async (year, adminUser) => {
+export const AddPublicHolidaysOfPakistanService = async (req, year) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const adminUser = req.user;
   const API_KEY = process.env.CALENDARIFIC_API_KEY;
   const COUNTRY = "PK";
 
@@ -293,7 +328,7 @@ export const AddPublicHolidaysOfPakistanService = async (year, adminUser) => {
           year,
           type: "national",
         },
-      }
+      },
     );
 
     const holidays = data?.response?.holidays || [];
@@ -304,6 +339,7 @@ export const AddPublicHolidaysOfPakistanService = async (year, adminUser) => {
 
     const holidayEvents = holidays.map((holiday) => {
       return {
+        company_id: companyId,
         user_id: adminUser._id,
         title: holiday.name,
         date: new Date(holiday.date.iso),
@@ -317,6 +353,7 @@ export const AddPublicHolidaysOfPakistanService = async (year, adminUser) => {
     // Optional: remove duplicates if holiday already exists
     for (const event of holidayEvents) {
       const exists = await Event.findOne({
+        company_id: companyId,
         title: event.title,
         date: event.date,
         category: "public-holiday",
@@ -336,17 +373,22 @@ export const AddPublicHolidaysOfPakistanService = async (year, adminUser) => {
   }
 };
 
-export const GetTodayCelebrationAlertsService = async ({
-  user,
-  scope,
-  excludeDepartments = [],
-}) => {
+export const GetTodayCelebrationAlertsService = async (req) => {
   try {
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
+
+    const user = req.user;
+    const { scope = "department", excludeDepartments = [] } = req.query || {};
+
     // ✅ Get today's date in Pakistan timezone
     const todayPKT = dayjs().tz("Asia/Karachi");
     const today = todayPKT.format("MM-DD");
 
-    const currentUser = await Users.findById(user._id).populate({
+    const currentUser = await Users.findOne({
+      _id: user._id,
+      company_id: companyId,
+    }).populate({
       path: "team",
       populate: { path: "department", model: "Departments" },
     });
@@ -369,6 +411,7 @@ export const GetTodayCelebrationAlertsService = async ({
     }
 
     const baseFilter = {
+      company_id: companyId,
       is_active: true,
       $or: [
         { date_of_birth: { $exists: true } },
@@ -380,14 +423,19 @@ export const GetTodayCelebrationAlertsService = async ({
       // Admin: no extra filtering (whole company)
     } else if (isBusiness) {
       baseFilter["team"] = {
-        $in: await Teams.find({ department: userDeptId }).distinct("_id"),
+        $in: await Teams.find({
+          company_id: companyId,
+          department: userDeptId,
+        }).distinct("_id"),
       };
     } else {
       const businessDepts = await Departments.find({
+        company_id: companyId,
         name: /business/i,
       }).distinct("_id");
 
       const excludedTeams = await Teams.find({
+        company_id: companyId,
         department: { $in: businessDepts },
       }).distinct("_id");
 
@@ -396,7 +444,7 @@ export const GetTodayCelebrationAlertsService = async ({
 
     const users = await Users.find(baseFilter)
       .select(
-        "first_name last_name profile_picture date_of_birth joining_date team"
+        "first_name last_name profile_picture date_of_birth joining_date team",
       )
       .populate({
         path: "team",
@@ -409,6 +457,7 @@ export const GetTodayCelebrationAlertsService = async ({
     const endOfDay = todayPKT.endOf("day").toDate();
 
     const todaysPosts = await Suggestion.find({
+      company_id: companyId,
       category: "culture",
       createdAt: { $gte: startOfDay, $lte: endOfDay },
     }).select("created_for_user _id celebration_type");
@@ -435,7 +484,7 @@ export const GetTodayCelebrationAlertsService = async ({
           const post = todaysPosts.find(
             (p) =>
               p.created_for_user?.toString() === u._id.toString() &&
-              p.celebration_type === "birthday"
+              p.celebration_type === "birthday",
           );
           birthdayUsers.push({
             ...baseUserInfo,
@@ -458,7 +507,7 @@ export const GetTodayCelebrationAlertsService = async ({
           const post = todaysPosts.find(
             (p) =>
               p.created_for_user?.toString() === u._id.toString() &&
-              p.celebration_type === "anniversary"
+              p.celebration_type === "anniversary",
           );
           anniversaryUsers.push({
             ...baseUserInfo,

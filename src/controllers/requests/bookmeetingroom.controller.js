@@ -8,8 +8,8 @@ export const CreateBooking = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     const booking = await MeetingRoomService.CreateBookingService(
-      req.user,
-      req.body
+      req,
+      req.body,
     );
 
     if (booking) {
@@ -18,7 +18,7 @@ export const CreateBooking = async (req, res) => {
         .map((att) => att._id);
       const meetingTitle = booking.title || "meeting";
 
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.MEETING_ROOM_BOOKING,
         message: `invited you to a ${meetingTitle} meeting.`,
@@ -48,8 +48,8 @@ export const GetFilteredBookings = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     const bookings_data = await MeetingRoomService.GetFilteredBookingsService(
-      req.user,
-      req.query
+      req,
+      req.query,
     );
     return AppResponse({
       res,
@@ -72,16 +72,16 @@ export const UpdateBooking = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     const updatedBooking = await MeetingRoomService.UpdateBookingService(
+      req,
       req.params.id,
       req.body,
-      req.user
     );
     if (updatedBooking) {
       const attendeeIds = updatedBooking.attendees
         .filter((att) => att._id.toString() !== req.user._id.toString())
         .map((att) => att._id);
       const meetingTitle = updatedBooking.title || "meeting";
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.MEETING_ROOM_BOOKING,
         message: `updated the ${meetingTitle} details.`,
@@ -111,21 +111,35 @@ export const DeleteBooking = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     const meeting = await MeetingRoomService.DeleteBookingService(
-      req.params.id
+      req,
+      req.params.id,
     );
     if (meeting) {
-      const attendeeIds = meeting.attendees
-        .filter((att) => att._id.toString() !== req.user._id.toString())
-        .map((att) => att._id);
+      // Populate attendees if they exist (they might be ObjectIds)
+      let attendeeIds = [];
+      if (meeting.attendees && meeting.attendees.length > 0) {
+        // If attendees are populated objects, extract _id
+        if (meeting.attendees[0]._id) {
+          attendeeIds = meeting.attendees
+            .filter((att) => att._id.toString() !== req.user._id.toString())
+            .map((att) => att._id);
+        } else {
+          // If attendees are just ObjectIds
+          attendeeIds = meeting.attendees.filter(
+            (att) => att.toString() !== req.user._id.toString(),
+          );
+        }
+      }
       const meetingTitle = meeting.title || "meeting";
 
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.MEETING_ROOM_BOOKING,
         message: `cancelled the ${meetingTitle} meeting.`,
         adminMessage: `cancelled a ${meetingTitle} meeting.`,
         notifyAdmins: true,
         moreUsers: attendeeIds,
+        company_id: req.company_id,
       });
     }
     return AppResponse({
@@ -146,9 +160,7 @@ export const DeleteBooking = async (req, res) => {
 export const GetUpcomingBooking = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
-    const booking = await MeetingRoomService.GetUpcomingBookingService(
-      req.user._id
-    );
+    const booking = await MeetingRoomService.GetUpcomingBookingService(req);
 
     if (!booking) {
       return AppResponse({

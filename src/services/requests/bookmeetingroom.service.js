@@ -5,13 +5,18 @@ import mongoose from "mongoose";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
+import { getCompanyId } from "../../utils/company.util.js";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
 // Change this if your app should use another timezone
 const APP_TZ = "Asia/Karachi";
-export const CreateBookingService = async (user, meetingRoomBookingData) => {
+export const CreateBookingService = async (req, meetingRoomBookingData) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
   const {
     start_date,
     end_date,
@@ -30,7 +35,7 @@ export const CreateBookingService = async (user, meetingRoomBookingData) => {
   if (recurrence_type === "none" && !start_date) {
     throw new AppError(
       "Start date is required for non-recurring bookings.",
-      400
+      400,
     );
   }
   if (
@@ -39,7 +44,7 @@ export const CreateBookingService = async (user, meetingRoomBookingData) => {
   ) {
     throw new AppError(
       "End date and selected days are required for weekly recurrence.",
-      400
+      400,
     );
   }
   if (
@@ -48,13 +53,13 @@ export const CreateBookingService = async (user, meetingRoomBookingData) => {
   ) {
     throw new AppError(
       "Date of the month and end month are required for monthly recurrence.",
-      400
+      400,
     );
   }
   if (recurrence_type === "custom" && (!start_date || !end_date)) {
     throw new AppError(
       "Start and end date are required for custom recurrence.",
-      400
+      400,
     );
   }
 
@@ -99,6 +104,7 @@ export const CreateBookingService = async (user, meetingRoomBookingData) => {
 
   if (location === "meeting-room") {
     const conflict = await MeetingRoom.findOne({
+      company_id: companyId,
       location: "meeting-room",
       start_date: { $in: bookingDates.map((d) => new Date(d)) },
       $or: [
@@ -111,12 +117,13 @@ export const CreateBookingService = async (user, meetingRoomBookingData) => {
     if (conflict) {
       throw new AppError(
         "The meeting room is already booked for at least one of the selected date(s) and time slot.",
-        400
+        400,
       );
     }
   }
 
   const newBooking = new MeetingRoom({
+    company_id: companyId,
     user: user._id,
     start_date,
     end_date,
@@ -136,7 +143,7 @@ export const CreateBookingService = async (user, meetingRoomBookingData) => {
 
   const result = await MeetingRoom.findById(newBooking._id)
     .select(
-      "start_date end_date duration time_slot start_time end_time title recurrence_details recurrence_type attendees location description"
+      "start_date end_date duration time_slot start_time end_time title recurrence_details recurrence_type attendees location description",
     )
     .populate("attendees", "first_name last_name profile_picture")
     .populate("user", "first_name last_name");
@@ -144,8 +151,12 @@ export const CreateBookingService = async (user, meetingRoomBookingData) => {
   return result;
 };
 
-export const GetFilteredBookingsService = async (user, query) => {
-  let filter = {};
+export const GetFilteredBookingsService = async (req, query) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
+  let filter = { company_id: companyId };
   const { user_id, month, year, recurrence_type } = query;
 
   // For non-admin users, include meetings where they are organizer OR attendee
@@ -177,7 +188,7 @@ export const GetFilteredBookingsService = async (user, query) => {
   try {
     const bookings = await MeetingRoom.find(filter)
       .select(
-        "start_date end_date duration time_slot start_time end_time title recurrence_details recurrence_type attendees location description user"
+        "start_date end_date duration time_slot start_time end_time title recurrence_details recurrence_type attendees location description user",
       )
       .populate("attendees", "_id first_name last_name profile_picture")
       .populate("user", "first_name last_name profile_picture")
@@ -195,8 +206,15 @@ export const GetFilteredBookingsService = async (user, query) => {
   }
 };
 
-export const UpdateBookingService = async (id, bookingData, user) => {
-  const existingBooking = await MeetingRoom.findById(id);
+export const UpdateBookingService = async (req, id, bookingData) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user;
+  const existingBooking = await MeetingRoom.findOne({
+    _id: id,
+    company_id: companyId,
+  });
   if (!existingBooking) throw new AppError("Booking not found", 400);
 
   if (
@@ -273,6 +291,7 @@ export const UpdateBookingService = async (id, bookingData, user) => {
 
     const conflict = await MeetingRoom.findOne({
       _id: { $ne: id },
+      company_id: companyId,
       location: "meeting-room",
       start_date: { $in: bookingDates.map((d) => new Date(d)) },
       $or: [
@@ -290,7 +309,7 @@ export const UpdateBookingService = async (id, bookingData, user) => {
     if (conflict) {
       throw new AppError(
         "The updated time slot conflicts with another existing booking.",
-        400
+        400,
       );
     }
   }
@@ -304,24 +323,38 @@ export const UpdateBookingService = async (id, bookingData, user) => {
   return updatedBooking;
 };
 
-export const DeleteBookingService = async (id) => {
-  const booking = await MeetingRoom.findById(id)
+export const DeleteBookingService = async (req, id) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  // First find and populate, then delete
+  const booking = await MeetingRoom.findOne({
+    _id: id,
+    company_id: companyId,
+  })
     .populate("attendees", "_id first_name last_name profile_picture")
     .populate("user", "_id first_name last_name profile_picture");
-  
+
   if (!booking) throw new AppError("Booking not found", 400);
-  
+
+  // Now delete it
   await MeetingRoom.findByIdAndDelete(id);
+
   return booking;
 };
 
-export const GetUpcomingBookingService = async (user) => {
+export const GetUpcomingBookingService = async (req) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = req.user._id;
   // Always get "now" in your chosen timezone
   const now = dayjs().tz(APP_TZ);
   const today = now.format("YYYY-MM-DD");
   const currentTimeFormatted = now.format("HH:mm");
 
   const bookings = await MeetingRoom.find({
+    company_id: companyId,
     $or: [{ user }, { attendees: { $in: [user] } }],
   })
     .sort({ start_date: 1, time_slot: 1 })
@@ -338,7 +371,7 @@ export const GetUpcomingBookingService = async (user) => {
 
     // Parse time slot ("12:00 PM - 12:30 PM")
     const timeSlotMatch = booking.time_slot.match(
-      /^(\d{1,2}):(\d{2})\s*(AM|PM)/i
+      /^(\d{1,2}):(\d{2})\s*(AM|PM)/i,
     );
     if (!timeSlotMatch) continue;
 
@@ -367,7 +400,7 @@ export const GetUpcomingBookingService = async (user) => {
       booking.recurrence_details?.days?.length
     ) {
       const daysOfWeek = booking.recurrence_details.days.map((d) =>
-        d.toLowerCase()
+        d.toLowerCase(),
       );
 
       let currentDate = now;
@@ -430,7 +463,7 @@ export const GetUpcomingBookingService = async (user) => {
         const adjustedMonth = targetMonth % 12;
 
         const nextMonthDate = dayjs(
-          `${adjustedYear}-${adjustedMonth + 1}-${dayOfMonth}`
+          `${adjustedYear}-${adjustedMonth + 1}-${dayOfMonth}`,
         ).tz(APP_TZ);
 
         if (nextMonthDate.isValid()) {

@@ -5,14 +5,16 @@ import { AppResponse } from "../middlewares/error.middleware.js";
 import redisClient from "../utils/redisClient.js";
 import { createLogsAndNotification } from "../utils/logNotification.js";
 import { NOTIFICATION_TYPES } from "../constants/notificationTypes.js";
+import { getCompanyId } from "../utils/company.util.js";
+import AppError from "../middlewares/error.middleware.js";
 
 export const CreateTeam = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
-    const newTeam = await TeamService.CreateTeamService(req.body);
+    const newTeam = await TeamService.CreateTeamService(req, req.body);
     if (newTeam) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.TEAM,
         message: `created the team "${newTeam.name}".`,
@@ -41,7 +43,8 @@ export const GetAllTeams = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
-    const teams = await TeamService.GetAllTeamsService();
+    const companyId = req.user?.company_id || req.company_id;
+    const teams = await TeamService.GetAllTeamsService(companyId);
     return AppResponse({
       res,
       statusCode: 200,
@@ -64,7 +67,8 @@ export const GetTeamById = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
-    const team = await TeamService.GetTeamByIdService(teamId);
+    const companyId = req.user?.company_id || req.company_id;
+    const team = await TeamService.GetTeamByIdService(companyId, teamId);
     return AppResponse({
       res,
       statusCode: 200,
@@ -84,7 +88,17 @@ export const GetTeamById = async (req, res) => {
 
 export const GetAllTeamLeads = async (req, res) => {
   try {
-    const teamLeads = await TeamService.GetAllTeamLeadsService();
+    checkUserAuthorization(req.user);
+    const companyId = req.user?.company_id || req.company_id;
+    if (!companyId) {
+      return AppResponse({
+        res,
+        statusCode: 403,
+        message: "Company context required",
+        success: false,
+      });
+    }
+    const teamLeads = await TeamService.GetAllTeamLeadsService(companyId);
     return AppResponse({
       res,
       statusCode: 200,
@@ -127,13 +141,16 @@ export const UpdateTeam = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
     const team = await TeamService.UpdateTeamService(
       req?.params?.teamId,
-      req.body
+      req.body,
+      companyId,
     );
 
     if (team) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.TEAM,
         message: `updated the team "${team.name}".`,
@@ -195,11 +212,14 @@ export const DeleteTeam = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
     const deletedTeam = await TeamService.DeleteTeamService(
-      req?.params?.teamId
+      req?.params?.teamId,
+      companyId,
     );
     if (deletedTeam) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.TEAM,
         message: `deleted the team "${deletedTeam.name}".`,
@@ -227,13 +247,16 @@ export const AddMemberToTeam = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
     const updatedTeam = await TeamService.AddMemberToTeamService(
       req?.params?.teamId,
-      req.body.memberId
+      req.body.memberId,
+      companyId,
     );
 
     if (updatedTeam) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.TEAM,
         message: `added a new member to the team "${updatedTeam.name}".`,
@@ -263,12 +286,15 @@ export const RemoveMemberFromTeam = async (req, res) => {
   try {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
+    const companyId = getCompanyId(req);
+    if (!companyId) throw new AppError("Company context required", 403);
     const updatedTeam = await TeamService.RemoveMemberFromTeamService(
       req?.params?.teamId,
-      req.params.memberId
+      req.params.memberId,
+      companyId,
     );
     if (updatedTeam) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.TEAM,
         message: `removed a member from the team "${updatedTeam.name}".`,

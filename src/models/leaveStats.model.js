@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 const LeaveStatsSchema = new mongoose.Schema(
   {
+    company_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Companies",
+      required: true,
+      index: true,
+    },
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Users",
@@ -92,6 +98,8 @@ const LeaveStatsSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-LeaveStatsSchema.index({ user: 1, year: 1 }, { unique: true });
+// Compound unique: user can only have one leave stats per year within a company
+LeaveStatsSchema.index({ company_id: 1, user: 1, year: 1 }, { unique: true });
+// company_id already has index: true in field definition
 
 export default mongoose.model("LeaveStats", LeaveStatsSchema);

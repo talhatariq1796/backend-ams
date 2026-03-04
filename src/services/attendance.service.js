@@ -1,10 +1,10 @@
 import Attendances from "../models/attendance.model.js";
 import Users from "../models/user.model.js";
 import Teams from "../models/team.model.js";
-import OfficeConfigs from "../models/config.model.js";
+import CompanyConfigs from "../models/config.model.js";
 import AppError from "../middlewares/error.middleware.js";
 import { getDateRangeFromFilter } from "../utils/dateFilters.utils.js";
-import * as WorkingHoursService from "./workingHours.service.js";
+import * as WorkingHoursService from "../services/workingHours.service.js";
 import leaveQueue from "../utils/leaveQueue.util.js";
 import Leave from "../models/requests/leave.model.js";
 import Departments from "../models/department.model.js";
@@ -17,6 +17,7 @@ import axios from "axios";
 import { AdjustLeaveStatsForUser } from "../utils/leaveStats.util.js";
 import { createLogsAndNotification } from "../utils/logNotification.js";
 import { NOTIFICATION_TYPES } from "../constants/notificationTypes.js";
+import { getCompanyId } from "../utils/company.util.js";
 
 const getClientIp = (req) => {
   const forwarded = req.headers["x-forwarded-for"];
@@ -92,11 +93,21 @@ export const MarkAttendanceService = async (
   checkin,
   marked_by,
 ) => {
-  const user = await Users.findById(user_id);
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  const user = await Users.findOne({ _id: user_id, company_id: companyId });
   if (!user) throw new AppError("User not found", 400);
 
-  const config = await OfficeConfigs.findOne();
-  if (!config) throw new AppError("Config not found", 400);
+  const config = await CompanyConfigs.findOne({ company_id: companyId });
+  if (!config) throw new AppError("Company configuration not found", 400);
+
+  // 🔍 Debug: Log config data
+  console.log("📋 Config fetched:", {
+    companyId: companyId.toString(),
+    bufferTime: config.buffer_time_minutes,
+    hasConfig: !!config,
+  });
 
   const attendanceDate = new Date(date);
   if (isNaN(attendanceDate.getTime())) {
@@ -118,8 +129,23 @@ export const MarkAttendanceService = async (
   const now = new Date();
   now.setHours(now.getHours() + 5);
 
+  // Ensure req has company_id for GetWorkingHoursByUserIdService
+  if (!req.company_id) {
+    req.company_id = companyId;
+  }
+  if (!req.user) {
+    req.user = { company_id: companyId };
+  }
+
   const { checkin_time, checkout_time } =
-    await WorkingHoursService.GetWorkingHoursByUserIdService(user_id);
+    await WorkingHoursService.GetWorkingHoursByUserIdService(req, user_id);
+
+  // 🔍 Debug: Log working hours
+  console.log("⏰ Working hours fetched:", {
+    checkin_time: checkin_time?.toISOString(),
+    checkout_time: checkout_time?.toISOString(),
+    userId: user_id.toString(),
+  });
 
   const checkinTimeOnly = new Date(checkin_time);
   checkinTimeOnly.setFullYear(1970, 0, 1);
@@ -128,6 +154,7 @@ export const MarkAttendanceService = async (
   nowTimeOnly.setFullYear(1970, 0, 1);
 
   const hasRemoteWork = await RemoteWorkRequests.exists({
+    company_id: companyId,
     user_id,
     status: "approved",
     start_date: { $lte: attendanceDate },
@@ -142,8 +169,8 @@ export const MarkAttendanceService = async (
     config?.attendance_rules?.enable_ip_check !== undefined
       ? config.attendance_rules.enable_ip_check
       : config?.enable_ip_check !== undefined
-        ? config.enable_ip_check
-        : true; // Default to true if not specified
+      ? config.enable_ip_check
+      : true; // Default to true if not specified
 
   // Only perform IP check if enabled and user is not on remote work
   if (!is_remote && enableIpCheck) {
@@ -175,6 +202,7 @@ export const MarkAttendanceService = async (
     const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
 
     const earlyLeaves = await Attendances.countDocuments({
+      company_id: companyId,
       user_id,
       date: { $gte: startOfMonth, $lte: endOfMonth },
       status: "early-leave",
@@ -190,6 +218,7 @@ export const MarkAttendanceService = async (
 
     // 1. Block if already marked for today
     const alreadyMarkedToday = await Attendances.findOne({
+      company_id: companyId,
       user_id,
       date: normalizedDate,
       check_in: { $exists: true },
@@ -199,11 +228,13 @@ export const MarkAttendanceService = async (
       throw new AppError("Attendance already marked for this date", 409);
     }
     let attendance = await Attendances.findOne({
+      company_id: companyId,
       user_id,
       date: { $gte: startOfDay, $lte: endOfDay },
     });
     // Check if user already has an active check-in (not checked out)
     // const activeCheckIn = await Attendances.findOne({
+    //   company_id: companyId,
     //   user_id,
     //   check_in: { $exists: true },
     //   check_out: { $exists: false },
@@ -215,6 +246,7 @@ export const MarkAttendanceService = async (
 
     // Check if user has approved leave for this date
     const approvedLeave = await Leave.findOne({
+      company_id: companyId,
       user: user_id,
       status: "approved",
       start_date: { $lte: attendanceDate },
@@ -267,6 +299,15 @@ export const MarkAttendanceService = async (
     let status = "present";
     let is_late = false;
 
+    // 🔍 Debug: Log time calculation
+    console.log("🕐 Time calculation:", {
+      nowTimeOnly: nowTimeOnly.toISOString(),
+      checkinTimeOnly: checkinTimeOnly.toISOString(),
+      timeDiffMinutes,
+      bufferTime,
+      shouldBeLate: timeDiffMinutes > bufferTime,
+    });
+
     if (timeDiffMinutes > bufferTime) {
       status = "present";
       is_late = true;
@@ -306,12 +347,14 @@ export const MarkAttendanceService = async (
     try {
       attendance = await Attendances.findOneAndUpdate(
         {
+          company_id: companyId,
           user_id,
           date: normalizedDate,
         },
         {
           $set: updateData,
           $setOnInsert: {
+            company_id: companyId,
             user_id,
             date: normalizedDate,
             created_by: marked_by,
@@ -335,6 +378,7 @@ export const MarkAttendanceService = async (
 
         attendance = await Attendances.findOneAndUpdate(
           {
+            company_id: companyId,
             user_id,
             date: normalizedDate,
           },
@@ -366,6 +410,7 @@ export const MarkAttendanceService = async (
         approvedLeave.leave_type,
         leaveDaysToRestore,
         "restore",
+        companyId,
       );
     }
 
@@ -389,6 +434,7 @@ export const MarkAttendanceService = async (
     cutoffDate.setDate(cutoffDate.getDate() - 1);
 
     let attendance = await Attendances.findOne({
+      company_id: companyId,
       user_id,
       check_in: { $gte: cutoffDate },
       check_out: { $exists: false },
@@ -430,6 +476,7 @@ export const MarkAttendanceService = async (
 
     // Check if user has approved half-day leave for this date
     const approvedHalfDayLeave = await Leave.findOne({
+      company_id: companyId,
       user: user_id,
       status: "approved",
       is_half_day: true,
@@ -459,6 +506,7 @@ export const MarkAttendanceService = async (
           approvedHalfDayLeave.leave_type,
           0.5,
           "apply",
+          companyId,
         );
 
         await sendUserNotification(
@@ -482,8 +530,15 @@ export const MarkAttendanceService = async (
           is_half_day: false,
           status: "approved",
           action_taken_by: "AMS",
+          company_id: companyId,
         };
-        await leaveQueue.add({ leaveData });
+        // Create leave directly instead of using queue to avoid Redis dependency
+        try {
+          await Leave.create(leaveData);
+        } catch (error) {
+          console.error("Failed to create auto-leave:", error.message);
+          // Don't block checkout if leave creation fails
+        }
 
         await AdjustLeaveStatsForUser(
           user_id,
@@ -491,6 +546,7 @@ export const MarkAttendanceService = async (
           "unpaid",
           1,
           "apply",
+          companyId,
         );
         await sendUserNotification(
           user_id,
@@ -527,8 +583,15 @@ export const MarkAttendanceService = async (
           is_half_day: true,
           status: "approved",
           action_taken_by: "AMS",
+          company_id: companyId,
         };
-        await leaveQueue.add({ leaveData });
+        // Create leave directly instead of using queue to avoid Redis dependency
+        try {
+          await Leave.create(leaveData);
+        } catch (error) {
+          console.error("Failed to create auto-half-day leave:", error.message);
+          // Don't block checkout if leave creation fails
+        }
 
         await AdjustLeaveStatsForUser(
           user_id,
@@ -536,6 +599,7 @@ export const MarkAttendanceService = async (
           "unpaid",
           0.5,
           "apply",
+          companyId,
         );
         await sendUserNotification(
           user_id,
@@ -564,8 +628,132 @@ export const MarkAttendanceService = async (
           approvedHalfDayLeave.leave_type,
           0.5,
           "restore",
+          companyId,
         );
 
+        if (earlyLeavesThisMonth >= 2) {
+          // Apply early leave penalty
+          attendance.status = "auto-half-day";
+          attendance.analysis = `User worked ${hours}h ${minutes}m (6.5–8h) and exceeded monthly early leave limit (${earlyLeavesThisMonth}). Auto-marked as half-day unpaid leave.`;
+
+          attendance.is_half_day = true;
+
+          const leaveData = {
+            user: user_id,
+            leave_type: "unpaid",
+            start_date: attendance.date,
+            end_date: attendance.date,
+            total_days: 0.5,
+            team: user.team,
+            reason:
+              "Auto-applied: Early leave exceeded monthly limit (worked 6.5-8 hours)",
+            is_half_day: true,
+            status: "approved",
+            action_taken_by: "AMS",
+            company_id: companyId,
+          };
+          // Create leave directly instead of using queue to avoid Redis dependency
+          try {
+            await Leave.create(leaveData);
+          } catch (error) {
+            console.error(
+              "Failed to create early leave penalty:",
+              error.message,
+            );
+            // Don't block checkout if leave creation fails
+          }
+
+          await AdjustLeaveStatsForUser(
+            user_id,
+            attendance.date.getFullYear(),
+            "unpaid",
+            0.5,
+            "apply",
+            companyId,
+          );
+
+          await sendUserNotification(
+            user_id,
+            `approved half-day ${approvedHalfDayLeave.leave_type} leave on ${dateStr} was removed and replaced with unpaid half-day leave due to exceeding monthly early leave limit. Worked ${hours}h ${minutes}m.`,
+            true,
+          );
+        } else {
+          // Within limit, just early leave
+          attendance.status = "early-leave";
+          attendance.analysis = `User had approved half-day ${approvedHalfDayLeave.leave_type} leave but worked ${hours}h ${minutes}m (6.5–8h). Early leave exceeded limit, so half-day unpaid leave applied.`;
+
+          await sendUserNotification(
+            user_id,
+            `approved half-day ${
+              approvedHalfDayLeave.leave_type
+            } leave on ${dateStr} was removed. Early check out detected with ${hours}h ${minutes}m worked. This counts as early leave (${
+              earlyLeavesThisMonth + 1
+            }/2 for this month).`,
+            false,
+          );
+        }
+      } else {
+        if (earlyLeavesThisMonth >= 2) {
+          // No half-day leave, apply auto-half-day for exceeding early leave limit
+          attendance.status = "auto-half-day";
+          attendance.analysis = `User worked ${hours}h ${minutes}m (6.5–8h) and exceeded monthly early leave limit (${earlyLeavesThisMonth}). Auto-marked as half-day unpaid leave.`;
+
+          attendance.is_half_day = true;
+
+          const leaveData = {
+            user: user_id,
+            leave_type: "unpaid",
+            start_date: attendance.date,
+            end_date: attendance.date,
+            total_days: 0.5,
+            team: user.team,
+            reason:
+              "Auto-applied: Early leave exceeded monthly limit (worked 6.5-8 hours)",
+            is_half_day: true,
+            status: "approved",
+            action_taken_by: "AMS",
+            company_id: companyId,
+          };
+          // Create leave directly instead of using queue to avoid Redis dependency
+          try {
+            await Leave.create(leaveData);
+          } catch (error) {
+            console.error(
+              "Failed to create early leave penalty:",
+              error.message,
+            );
+            // Don't block checkout if leave creation fails
+          }
+
+          await AdjustLeaveStatsForUser(
+            user_id,
+            attendance.date.getFullYear(),
+            "unpaid",
+            0.5,
+            "apply",
+            companyId,
+          );
+
+          await sendUserNotification(
+            user_id,
+            `attendance was automatically marked as half-day unpaid leave on ${dateStr} due to exceeding monthly early leave limit. Worked ${hours}h ${minutes}m and have already taken ${earlyLeavesThisMonth} early leaves this month.`,
+            true,
+          );
+        } else {
+          // Within early leave limit
+          attendance.status = "early-leave";
+          attendance.analysis = `User worked ${hours}h ${minutes}m (6.5–8h). Early leave recorded (${
+            earlyLeavesThisMonth + 1
+          }/2 used this month).`;
+
+          await sendUserNotification(
+            user_id,
+            `early check out detected on ${dateStr} with ${hours}h ${minutes}m worked. This counts as early leave (${
+              earlyLeavesThisMonth + 1
+            }/2 for this month).`,
+            false,
+          );
+        }
         attendance.analysis += ` Approved half-day ${approvedHalfDayLeave.leave_type} leave removed and 0.5 days restored.`;
       }
 
@@ -710,6 +898,7 @@ export const MarkAttendanceService = async (
           approvedHalfDayLeave.leave_type,
           0.5,
           "restore",
+          companyId,
         );
         attendance.analysis = `User completed full-day work (${hours}h ${minutes}m) despite having approved half-day ${approvedHalfDayLeave.leave_type} leave. Leave removed and 0.5 days restored.`;
 
@@ -719,12 +908,24 @@ export const MarkAttendanceService = async (
           false,
         );
       }
-
       // attendance.status = wasLateAtCheckIn ? "late" : "present";
       attendance.status = isRemoteCheckIn ? "remote" : "present";
       attendance.analysis = `User worked ${hours}h ${minutes}m (≥8h). Marked as full-day present${
         isRemoteCheckIn ? " (remote)" : ""
       }.`;
+
+      // // ✅ FIX: Preserve late status if user was late at check-in
+      // const wasLateAtCheckIn = attendance.is_late || false;
+      // if (isRemoteCheckIn) {
+      //   attendance.status = "remote";
+      //   attendance.analysis = `User worked ${hours}h ${minutes}m (≥8h). Marked as full-day present (remote).`;
+      // } else if (wasLateAtCheckIn) {
+      //   attendance.status = "late";
+      //   attendance.analysis = `User worked ${hours}h ${minutes}m (≥8h) but was late at check-in. Marked as late.`;
+      // } else {
+      //   attendance.status = "present";
+      //   attendance.analysis = `User worked ${hours}h ${minutes}m (≥8h). Marked as full-day present.`;
+      // }
     }
 
     attendance.updated_by = marked_by;
@@ -734,33 +935,65 @@ export const MarkAttendanceService = async (
   }
 };
 
-export const MarkAttendanceByAdminService = async ({
-  user_id,
-  date,
-  check_in,
-  check_out,
-  status,
-  marked_by,
-}) => {
-  const user = await Users.findById(user_id).populate("team");
+export const MarkAttendanceByAdminService = async (
+  req,
+  { user_id, date, check_in, check_out, status, marked_by },
+) => {
+  // Get company_id from request, or from the target user if available
+  let companyId = getCompanyId(req);
+
+  // If company_id not in request, get it from the target user being marked
+  if (!companyId) {
+    const targetUser = await Users.findById(user_id).select("company_id");
+    if (!targetUser) {
+      throw new AppError("User not found", 404);
+    }
+    if (!targetUser.company_id) {
+      throw new AppError("User is not associated with a company", 403);
+    }
+    companyId = targetUser.company_id;
+  }
+
+  const user = await Users.findOne({
+    _id: user_id,
+    company_id: companyId,
+  }).populate("team");
   if (!user) throw new AppError("User not found", 404);
 
-  const config = await OfficeConfigs.findOne();
-  if (!config) throw new AppError("Config not found", 400);
+  // Verify admin is from the same company (if req.user exists)
+  if (req.user && !req.user.is_super_admin) {
+    const adminCompanyId = req.user.company_id || req.company_id;
+    if (adminCompanyId && adminCompanyId.toString() !== companyId.toString()) {
+      throw new AppError(
+        "Cannot mark attendance for users from another company",
+        403,
+      );
+    }
+  }
 
-  const actingUser = await Users.findById(marked_by).select(
-    "first_name last_name",
-  );
+  const config = await CompanyConfigs.findOne({ company_id: companyId });
+  if (!config) throw new AppError("Company configuration not found", 400);
+
+  const actingUser = await Users.findOne({
+    _id: marked_by,
+    company_id: companyId,
+  }).select("first_name last_name");
   if (!actingUser) throw new AppError("Invalid admin user", 400);
 
+  // Ensure req has company_id for GetWorkingHoursByUserIdService
+  if (!req.company_id) {
+    req.company_id = companyId;
+  }
+
   const { checkin_time } =
-    await WorkingHoursService.GetWorkingHoursByUserIdService(user_id);
+    await WorkingHoursService.GetWorkingHoursByUserIdService(req, user_id);
 
   const attendanceDate = new Date(date);
   attendanceDate.setUTCHours(0, 0, 0, 0);
 
   // Delete existing leaves for this date
   await Leave.deleteMany({
+    company_id: companyId,
     user: user_id,
     start_date: attendanceDate,
     end_date: attendanceDate,
@@ -814,6 +1047,7 @@ export const MarkAttendanceByAdminService = async ({
           is_half_day: false,
           status: "approved",
           action_taken_by: `${actingUser.first_name} ${actingUser.last_name}`,
+          company_id: companyId,
         },
       });
 
@@ -823,6 +1057,7 @@ export const MarkAttendanceByAdminService = async ({
         "unpaid",
         1,
         "apply",
+        companyId,
       );
     } else if (totalMinutes < 390) {
       finalStatus = "auto-half-day";
@@ -840,6 +1075,7 @@ export const MarkAttendanceByAdminService = async ({
           is_half_day: true,
           status: "approved",
           action_taken_by: `${actingUser.first_name} ${actingUser.last_name}`,
+          company_id: companyId,
         },
       });
 
@@ -849,6 +1085,7 @@ export const MarkAttendanceByAdminService = async ({
         "unpaid",
         0.5,
         "apply",
+        companyId,
       );
     } else if (totalMinutes < 480) {
       finalStatus = "early-leave";
@@ -880,6 +1117,7 @@ export const MarkAttendanceByAdminService = async ({
         is_half_day: false,
         status: "approved",
         action_taken_by: `${actingUser.first_name} ${actingUser.last_name}`,
+        company_id: companyId,
       },
     });
 
@@ -889,10 +1127,12 @@ export const MarkAttendanceByAdminService = async ({
       "annual",
       1,
       "apply",
+      companyId,
     );
   }
   // Remote work check — override if approved
   const remoteWorkApproved = await RemoteWorkRequests.exists({
+    company_id: companyId,
     user_id,
     status: "approved",
     start_date: { $lte: attendanceDate },
@@ -905,9 +1145,10 @@ export const MarkAttendanceByAdminService = async ({
   }
   // Save/update attendance
   const attendance = await Attendances.findOneAndUpdate(
-    { user_id, date: attendanceDate },
+    { company_id: companyId, user_id, date: attendanceDate },
     {
       $set: {
+        company_id: companyId,
         user_id,
         date: attendanceDate,
         check_in,
@@ -944,16 +1185,33 @@ function calculateWorkingDays(startDate, endDate) {
   return count;
 }
 
-export const EditAttendanceByAdminService = async ({
-  attendance_id,
-  updates,
-  updated_by,
-}) => {
-  const actingUser = await Users.findById(updated_by).select(
-    "first_name last_name",
-  );
+export const EditAttendanceByAdminService = async (
+  req,
+  { attendance_id, updates, updated_by },
+) => {
+  // Require company_id from request so we only fetch this company's data
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  if (!req.company_id) req.company_id = companyId;
+
+  const actingUser = await Users.findOne({
+    _id: updated_by,
+    company_id: companyId,
+  }).select("first_name last_name role");
   if (!actingUser)
     throw new AppError("Invalid user performing the action", 400);
+
+  // Verify admin is from the same company (if req.user exists)
+  if (req.user && !req.user.is_super_admin) {
+    const adminCompanyId = req.user.company_id || req.company_id;
+    if (adminCompanyId && adminCompanyId.toString() !== companyId.toString()) {
+      throw new AppError(
+        "Cannot edit attendance for users from another company",
+        403,
+      );
+    }
+  }
 
   const toLocalMidnight = (date) => {
     const d = new Date(date);
@@ -966,24 +1224,64 @@ export const EditAttendanceByAdminService = async ({
     const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
 
     return await Attendances.countDocuments({
+      company_id: companyId,
       user_id,
       date: { $gte: startOfMonth, $lte: endOfMonth },
       status: "early-leave",
     });
   };
 
-  const attendance = await Attendances.findById(attendance_id).populate(
-    "user_id",
-    "first_name last_name email employee_id team _id",
-  );
+  const attendance = await Attendances.findOne({
+    _id: attendance_id,
+    company_id: companyId,
+  }).populate("user_id", "first_name last_name email employee_id team _id");
 
   if (!attendance) throw new AppError("Attendance record not found", 404);
 
-  const config = await OfficeConfigs.findOne();
-  if (!config) throw new AppError("Config not found", 400);
+  // Team lead: can only edit their team members' attendance
+  if (actingUser.role === "teamLead") {
+    const teamsLed = await Teams.find({
+      company_id: companyId,
+      lead: updated_by,
+    }).select("members");
+    if (!teamsLed.length) {
+      throw new AppError("You are not leading any team", 403);
+    }
+    const allMemberIds = teamsLed.flatMap((t) =>
+      (t.members || []).map((m) => m.toString())
+    );
+    const attendanceUserId =
+      attendance.user_id?._id?.toString() || attendance.user_id?.toString();
+    if (!attendanceUserId || !allMemberIds.includes(attendanceUserId)) {
+      throw new AppError(
+        "You can only edit attendance of your team members",
+        403,
+      );
+    }
+  } else if (
+    actingUser.role !== "admin" &&
+    !(req.user && req.user.is_super_admin)
+  ) {
+    throw new AppError(
+      "You are not authorized to edit attendance",
+      403,
+    );
+  }
+
+  // Validate attendance belongs to the same company
+  if (attendance.company_id.toString() !== companyId.toString()) {
+    throw new AppError(
+      "Unauthorized: Cannot access attendance from another company",
+      403,
+    );
+  }
+
+  const config = await CompanyConfigs.findOne({ company_id: companyId });
+  if (!config) throw new AppError("Company configuration not found", 400);
 
   const { checkin_time } =
     await WorkingHoursService.GetWorkingHoursByUserIdService(
+      req,
       attendance.user_id._id,
     );
 
@@ -1058,7 +1356,7 @@ export const EditAttendanceByAdminService = async ({
         leaveDate.getFullYear(),
         unpaidLeave.leave_type,
         unpaidLeave.total_days,
-        "restore",
+        "restore"
       );
       deletedUnpaidLeaveIds.push(unpaidLeave._id);
     }
@@ -1073,6 +1371,7 @@ export const EditAttendanceByAdminService = async ({
 
   // Delete all other leaves (non-unpaid or if checkout not being removed) for the date
   const existingLeaves = await Leave.find({
+    company_id: companyId,
     user: attendance.user_id._id,
     start_date: leaveDate,
     end_date: leaveDate,
@@ -1088,10 +1387,12 @@ export const EditAttendanceByAdminService = async ({
       existingLeave.leave_type,
       existingLeave.total_days,
       "restore",
+      companyId,
     );
   }
 
   await Leave.deleteMany({
+    company_id: companyId,
     user: attendance.user_id._id,
     start_date: leaveDate,
     end_date: leaveDate,
@@ -1123,6 +1424,7 @@ export const EditAttendanceByAdminService = async ({
         is_half_day: false,
         status: "approved",
         action_taken_by: `${actingUser.first_name} ${actingUser.last_name}`,
+        company_id: companyId,
       },
     });
 
@@ -1132,6 +1434,7 @@ export const EditAttendanceByAdminService = async ({
       "annual",
       1,
       "apply",
+      companyId,
     );
   }
 
@@ -1182,6 +1485,7 @@ export const EditAttendanceByAdminService = async ({
           is_half_day: false,
           status: "approved",
           action_taken_by: `${actingUser.first_name} ${actingUser.last_name}`,
+          company_id: companyId,
         },
       });
 
@@ -1191,6 +1495,7 @@ export const EditAttendanceByAdminService = async ({
         "unpaid",
         1,
         "apply",
+        companyId,
       );
     } else if (totalMinutes < 390) {
       attendance.status = "auto-half-day";
@@ -1208,6 +1513,7 @@ export const EditAttendanceByAdminService = async ({
           is_half_day: true,
           status: "approved",
           action_taken_by: `${actingUser.first_name} ${actingUser.last_name}`,
+          company_id: companyId,
         },
       });
 
@@ -1217,6 +1523,7 @@ export const EditAttendanceByAdminService = async ({
         "unpaid",
         0.5,
         "apply",
+        companyId,
       );
     } else if (totalMinutes < 480) {
       const earlyLeavesThisMonth = await countEarlyLeavesInMonth(
@@ -1241,6 +1548,7 @@ export const EditAttendanceByAdminService = async ({
             is_half_day: true,
             status: "approved",
             action_taken_by: `${actingUser.first_name} ${actingUser.last_name}`,
+            company_id: companyId,
           },
         });
 
@@ -1250,6 +1558,7 @@ export const EditAttendanceByAdminService = async ({
           "unpaid",
           0.5,
           "apply",
+          companyId,
         );
       } else {
         attendance.status = "early-leave";
@@ -1305,6 +1614,7 @@ export const EditAttendanceByAdminService = async ({
         is_half_day: false,
         status: "approved",
         action_taken_by: `${actingUser.first_name} ${actingUser.last_name}`,
+        company_id: companyId,
       },
     });
 
@@ -1314,11 +1624,13 @@ export const EditAttendanceByAdminService = async ({
       "annual",
       1,
       "apply",
+      companyId,
     );
   }
 
   // 🔹 Remote Work Check — override
   const remoteWorkApproved = await RemoteWorkRequests.exists({
+    company_id: companyId,
     user_id: attendance.user_id._id,
     status: "approved",
     start_date: { $lte: leaveDate },
@@ -1328,6 +1640,11 @@ export const EditAttendanceByAdminService = async ({
   if (remoteWorkApproved) {
     attendance.status = "remote";
     analysis = "User had approved remote work for this date. Marked remote.";
+  }
+
+  // Ensure company_id is set before saving
+  if (!attendance.company_id) {
+    attendance.company_id = companyId;
   }
 
   // ✅ Save the updated attendance
@@ -1362,7 +1679,7 @@ export const EditAttendanceByAdminService = async ({
     const updatedAttendance = await Attendances.findByIdAndUpdate(
       attendance._id,
       updateData,
-      { new: true },
+      { new: true }
     ).populate("user_id", "first_name last_name email employee_id team _id");
 
     return updatedAttendance;
@@ -1372,17 +1689,14 @@ export const EditAttendanceByAdminService = async ({
   }
 };
 
-export const GetAttendanceRecordsService = async ({
-  user_id,
-  filter_type,
-  month,
-  year,
-  date,
-  start_date,
-  end_date,
-  role,
-}) => {
-  let filter = {};
+export const GetAttendanceRecordsService = async (
+  req,
+  { user_id, filter_type, month, year, date, start_date, end_date, role },
+) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
+  let filter = { company_id: companyId };
   if (role === "employee" && !user_id) {
     throw new AppError(
       "Unauthorized access: Employees must provide their user_id.",
@@ -1432,7 +1746,10 @@ export const GetAttendanceRecordsService = async ({
   return { attendance: attendanceRecords };
 };
 
-export const GetTodaysAttendanceService = async (user, user_id) => {
+export const GetTodaysAttendanceService = async (req, user, user_id) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const now = new Date();
   const currentHour = now.getHours();
 
@@ -1449,6 +1766,7 @@ export const GetTodaysAttendanceService = async (user, user_id) => {
   endOfDay.setUTCHours(23, 59, 59, 999);
 
   const filter = {
+    company_id: companyId,
     date: {
       $gte: startOfDay,
       $lte: endOfDay,
@@ -1511,7 +1829,7 @@ export const GetTodaysAttendanceService = async (user, user_id) => {
 const calculateWorkingDaysInRange = (
   startDate,
   endDate,
-  workingDays = [1, 2, 3, 4, 5],
+  workingDays = [1, 2, 3, 4, 5]
 ) => {
   let count = 0;
   let current = new Date(startDate);
@@ -1534,12 +1852,16 @@ const calculateWorkingDaysInRange = (
 };
 
 export const GetAttendanceStatsService = async (
+  req,
   user,
   filter_type,
   user_id,
   start_date,
   end_date,
 ) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   let startDate, endDate;
   const applyDateFilter = filter_type && filter_type !== "all";
 
@@ -1556,7 +1878,7 @@ export const GetAttendanceStatsService = async (
       throw new AppError(error.message, 400);
     }
   }
-  const filter = {};
+  const filter = { company_id: companyId };
 
   if (user.role === "admin" && user_id) {
     filter.user_id = user_id;
@@ -1579,7 +1901,7 @@ export const GetAttendanceStatsService = async (
       totalWorkingDays = calculateWorkingDaysInRange(
         startDate,
         endDate,
-        workingDays,
+        workingDays
       );
     } catch (error) {
       console.error("Error fetching config for working days:", error);
@@ -1659,7 +1981,10 @@ const calculateAverageProductionTime = (records) => {
   return `${hours} h ${mins} m`;
 };
 
-export const GetAttendanceStatusByDateService = async (user_id, date) => {
+export const GetAttendanceStatusByDateService = async (req, user_id, date) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   if (!user_id || !date) {
     throw new AppError("Both user and date are required", 400);
   }
@@ -1667,6 +1992,7 @@ export const GetAttendanceStatusByDateService = async (user_id, date) => {
   const queryDate = new Date(date);
 
   const attendance = await Attendances.findOne({
+    company_id: companyId,
     user_id,
     date: queryDate,
   }).populate("user_id", "first_name last_name employee_id");
@@ -1695,6 +2021,7 @@ export const GetAttendanceStatusByDateService = async (user_id, date) => {
 };
 
 export const GetAttendanceHistoryService = async (
+  req,
   user,
   filter_type,
   start_date,
@@ -1707,6 +2034,9 @@ export const GetAttendanceHistoryService = async (
   department_id,
   employment_type,
 ) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const now = new Date();
   const today = new Date(now);
   today.setHours(0, 0, 0, 0);
@@ -1718,6 +2048,8 @@ export const GetAttendanceHistoryService = async (
   } = getPagination(page, limit);
 
   const matchStage = [];
+  // Add company_id to match stage
+  matchStage.push({ company_id: companyId });
   let filterDate = null;
 
   // ✅ Date Filtering
@@ -1771,12 +2103,15 @@ export const GetAttendanceHistoryService = async (
   if ((department_id || employment_type) && user.role === "admin") {
     let teamIds = [];
     if (department_id) {
-      const department = await Departments.findById(department_id).lean();
+      const department = await Departments.findOne({
+        _id: department_id,
+        company_id: companyId,
+      }).lean();
       if (!department) throw new AppError("Invalid department ID", 400);
       teamIds = department.teams || [];
     }
 
-    const userFilter = {};
+    const userFilter = { company_id: companyId };
     if (teamIds.length) userFilter.team = { $in: teamIds };
     if (employment_type) userFilter.employment_status = employment_type;
 
@@ -1807,11 +2142,13 @@ export const GetAttendanceHistoryService = async (
   // ✅ Awaiting Users (single day filter)
   if (status === "awaiting" && filterDate && user.role === "admin") {
     const attendanceUsers = await Attendances.find({
+      company_id: companyId,
       date: filterDate,
       ...(userFilterIds ? { user_id: { $in: userFilterIds } } : {}),
     }).distinct("user_id");
 
     const userSearchFilter = {
+      company_id: companyId,
       ...(userFilterIds ? { _id: { $in: userFilterIds } } : {}),
       _id: { $nin: attendanceUsers },
       role: { $ne: "admin" },
@@ -2141,7 +2478,7 @@ export const GetMonthlyAttendanceService = async (
   const totalWorkingDays = calculateWorkingDaysInRange(
     startDate,
     endDate,
-    workingDaysConfig,
+    workingDaysConfig
   );
 
   const results = users.map((user) => {
@@ -2728,23 +3065,29 @@ export const DownloadTodaysAttendanceService = async (
   employment_type,
   search,
 ) => {
+  const companyId = user?.company_id;
+  if (!companyId) throw new AppError("Company context required", 403);
+
   const today = new Date();
   const startOfToday = new Date(today);
   startOfToday.setUTCHours(0, 0, 0, 0);
   const endOfToday = new Date(today);
   endOfToday.setUTCHours(23, 59, 59, 999);
 
-  // Check if today is a weekend
   const dayOfWeek = today.getDay();
   const isTodayWeekend = dayOfWeek === 0 || dayOfWeek === 6;
 
   const userFilter = {
+    company_id: companyId,
     is_active: true,
     role: { $in: ["employee", "teamLead"] },
   };
 
   if (department_id) {
-    const dept = await Departments.findById(department_id);
+    const dept = await Departments.findOne({
+      _id: department_id,
+      company_id: companyId,
+    });
     if (!dept) throw new AppError("Invalid department ID", 400);
     userFilter.team = { $in: dept.teams };
   }
@@ -2765,10 +3108,12 @@ export const DownloadTodaysAttendanceService = async (
   const users = await Users.find(userFilter).lean();
 
   const attendances = await Attendances.find({
+    company_id: companyId,
     date: { $gte: startOfToday, $lte: endOfToday },
   }).lean();
 
   const leaves = await Leave.find({
+    company_id: companyId,
     start_date: { $lte: today },
     end_date: { $gte: today },
     status: "approved",
@@ -2818,6 +3163,9 @@ export async function generateAttendanceRecords() {
   const startDate = new Date("2025-05-20");
   const endDate = new Date("2025-06-25");
 
+  const user = await Users.findById(userId).select("company_id").lean();
+  const companyId = user?.company_id || null;
+
   const records = [];
 
   for (
@@ -2851,6 +3199,7 @@ export async function generateAttendanceRecords() {
     const status = statuses[Math.floor(Math.random() * statuses.length)];
 
     records.push({
+      ...(companyId && { company_id: companyId }),
       check_in: checkIn,
       date: new Date(date.getFullYear(), date.getMonth(), date.getDate()),
       is_late: isLate,
@@ -2903,7 +3252,7 @@ export const GetManagerTodayAttendanceService = async (user, filters = {}) => {
   // Get manager's teams or specific team if team_id provided
   let teamIds = [];
   const Teams = require("../models/team.model.js").default;
-
+  
   if (team_id && mongoose.Types.ObjectId.isValid(team_id)) {
     // Specific team requested
     if (user.role === "manager") {
@@ -2927,9 +3276,7 @@ export const GetManagerTodayAttendanceService = async (user, filters = {}) => {
   } else {
     // Get all manager's teams
     if (user.role === "manager") {
-      const managerTeams = await Teams.find({ managers: user._id }).select(
-        "_id",
-      );
+      const managerTeams = await Teams.find({ managers: user._id }).select("_id");
       teamIds = managerTeams.map((t) => t._id);
 
       if (teamIds.length === 0) {
@@ -2944,12 +3291,12 @@ export const GetManagerTodayAttendanceService = async (user, filters = {}) => {
   teams.forEach((team) => {
     if (team.members?.length) {
       memberIds.push(
-        ...team.members.map((m) => new mongoose.Types.ObjectId(m)),
+        ...team.members.map((m) => new mongoose.Types.ObjectId(m))
       );
     }
   });
   memberIds = [...new Set(memberIds.map((id) => id.toString()))].map(
-    (id) => new mongoose.Types.ObjectId(id),
+    (id) => new mongoose.Types.ObjectId(id)
   );
 
   // Build filter
@@ -2975,7 +3322,9 @@ export const GetManagerTodayAttendanceService = async (user, filters = {}) => {
   // Build search regex for user lookup
   let searchFilter = {};
   if (search && search.trim()) {
-    const escapedSearch = search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapedSearch = search
+      .trim()
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const searchRegex = new RegExp(escapedSearch, "i");
     searchFilter = {
       $or: [
@@ -3083,10 +3432,7 @@ export const GetManagerTodayAttendanceService = async (user, filters = {}) => {
  * @param {String} team_id - Optional: specific team ID to filter
  * @returns {Object} - Summary counts
  */
-export const GetManagerTodayAttendanceSummaryService = async (
-  user,
-  team_id,
-) => {
+export const GetManagerTodayAttendanceSummaryService = async (user, team_id) => {
   if (user.role !== "manager" && user.role !== "admin") {
     throw new AppError("Only managers and admins can access this", 403);
   }
@@ -3132,9 +3478,7 @@ export const GetManagerTodayAttendanceSummaryService = async (
   } else {
     // Get all manager's teams
     if (user.role === "manager") {
-      const managerTeams = await Teams.find({ managers: user._id }).select(
-        "_id members",
-      );
+      const managerTeams = await Teams.find({ managers: user._id }).select("_id members");
       teamIds = managerTeams.map((t) => t._id);
 
       if (teamIds.length === 0) {
@@ -3149,12 +3493,12 @@ export const GetManagerTodayAttendanceSummaryService = async (
   teams.forEach((team) => {
     if (team.members?.length) {
       memberIds.push(
-        ...team.members.map((m) => new mongoose.Types.ObjectId(m)),
+        ...team.members.map((m) => new mongoose.Types.ObjectId(m))
       );
     }
   });
   memberIds = [...new Set(memberIds.map((id) => id.toString()))].map(
-    (id) => new mongoose.Types.ObjectId(id),
+    (id) => new mongoose.Types.ObjectId(id)
   );
 
   const totalMembers = memberIds.length;

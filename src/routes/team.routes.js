@@ -1,65 +1,79 @@
 import express from "express";
 import * as TeamController from "../controllers/team.controller.js";
 import { authenticateToken } from "../middlewares/user.middleware.js";
-// import { cacheMiddleware } from "../middlewares/cache.middleware.js";
+import { requirePermission } from "../middlewares/permission.middleware.js";
 
 const TeamRouter = express.Router();
 
-TeamRouter.post("/team", authenticateToken, TeamController.CreateTeam);
+TeamRouter.post(
+  "/team",
+  authenticateToken,
+  requirePermission("manage_teams"),
+  TeamController.CreateTeam,
+);
 
 TeamRouter.get(
   "/teams",
   authenticateToken,
-  // cacheMiddleware("teams_"),
-  TeamController.GetAllTeams
+  requirePermission("view_teams"),
+  TeamController.GetAllTeams,
 );
 
 TeamRouter.get(
   "/teams/:teamId",
   authenticateToken,
-  // cacheMiddleware("teams_"),
-  TeamController.GetTeamById
+  requirePermission("view_teams"),
+  TeamController.GetTeamById,
 );
 
 TeamRouter.get(
   "/teams/:teamId/leads",
   authenticateToken,
+  requirePermission("view_teams"),
   // cacheMiddleware("teams_"),
-  TeamController.GetTeamLeads
+  TeamController.GetTeamLeads,
 );
 
 TeamRouter.get(
   "/team-leads",
   authenticateToken,
-  // cacheMiddleware("teams_"),
-  TeamController.GetAllTeamLeads
+  requirePermission("view_teams"),
+  TeamController.GetAllTeamLeads,
 );
 
 TeamRouter.get(
   "/teams/:teamId/members",
   authenticateToken,
-  // cacheMiddleware("teams_"),
-  TeamController.GetTeamMembers
+  requirePermission("view_team_members"),
+  TeamController.GetTeamMembers,
 );
 
-TeamRouter.put("/teams/:teamId", authenticateToken, TeamController.UpdateTeam);
+TeamRouter.put(
+  "/teams/:teamId",
+  authenticateToken,
+  requirePermission("manage_teams"),
+  TeamController.UpdateTeam,
+);
 
 TeamRouter.delete(
   "/teams/:teamId",
   authenticateToken,
-  TeamController.DeleteTeam
+  requirePermission("manage_teams"),
+  TeamController.DeleteTeam,
 );
 
 TeamRouter.put(
   "/teams/:teamId/members",
   authenticateToken,
-  TeamController.AddMemberToTeam
+  requirePermission("manage_teams"),
+  TeamController.AddMemberToTeam,
 );
 
 TeamRouter.delete(
   "/teams/:teamId/members/:memberId",
   authenticateToken,
-  TeamController.RemoveMemberFromTeam
+  requirePermission("manage_teams"),
+  TeamController.RemoveMemberFromTeam,
 );
 
 export default TeamRouter;

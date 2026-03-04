@@ -5,8 +5,14 @@ import { CheckValidation } from "../utils/validation.util.js";
 import { CreateTeamService } from "./team.service.js";
 import AppError from "../middlewares/error.middleware.js";
 import { invalidateCache } from "../utils/cache.util.js";
+import { getCompanyId } from "../utils/company.util.js";
 
-export const CreateDepartmentService = async (departmentData, user) => {
+export const CreateDepartmentService = async (req, departmentData, user) => {
+  const companyId = getCompanyId(req);
+  if (!companyId) {
+    throw new AppError("Company context required", 403);
+  }
+
   //updateddd 3
   const { name, teams } = departmentData;
   //updateddd 4
@@ -15,10 +21,16 @@ export const CreateDepartmentService = async (departmentData, user) => {
   });
   if (validationError) throw new AppError(validationError, 400);
 
-  const existingDepartment = await Department.findOne({ name });
+  const existingDepartment = await Department.findOne({
+    company_id: companyId,
+    name,
+  });
   if (existingDepartment)
     throw new AppError(`Department ${name} already exists`, 409);
-  const existingTeams = await Team.find({ name: { $in: teams } });
+  const existingTeams = await Team.find({
+    company_id: companyId,
+    name: { $in: teams },
+  });
   if (existingTeams.length > 0) {
     const existingTeamNames = existingTeams.map((team) => team.name).join(", ");
     throw new AppError(
@@ -27,13 +39,17 @@ export const CreateDepartmentService = async (departmentData, user) => {
     );
   }
 
-  const newDepartment = new Department({ name });
+  const newDepartment = new Department({ company_id: companyId, name });
   await newDepartment.save();
   const createdTeams = await Promise.all(
     teams.map(async (team) => {
       try {
-        const teamData = { department: newDepartment._id, name: team };
-        const newTeam = await CreateTeamService(teamData, user);
+        const teamData = {
+          department: newDepartment._id,
+          name: team,
+          company_id: companyId,
+        };
+        const newTeam = await CreateTeamService(req, teamData, user);
         return newTeam._id;
       } catch (error) {
         console.error(`Failed to create team ${team}:`, error);
@@ -53,8 +69,8 @@ export const CreateDepartmentService = async (departmentData, user) => {
   return department;
 };
 
-export const GetAllDepartmentsService = async () => {
-  const departments = await Department.find()
+export const GetAllDepartmentsService = async (companyId) => {
+  const departments = await Department.find({ company_id: companyId })
     .sort({ createdAt: -1 })
     .populate({
       path: "teams",
@@ -70,8 +86,11 @@ export const GetAllDepartmentsService = async () => {
   return departments;
 };
 
-export const GetDepartmentByIdService = async (departmentId) => {
-  const department = await Department.findById(departmentId).populate({
+export const GetDepartmentByIdService = async (companyId, departmentId) => {
+  const department = await Department.findOne({
+    _id: departmentId,
+    company_id: companyId,
+  }).populate({
     path: "teams",
     populate: {
       path: "members",
@@ -85,7 +104,7 @@ export const GetDepartmentByIdService = async (departmentId) => {
   return department;
 };
 
-export const GetDepartmentStatsService = async () => {
+export const GetDepartmentStatsService = async (companyId) => {
   const [
     departmentCount,
     employeesCount,
@@ -93,19 +112,26 @@ export const GetDepartmentStatsService = async () => {
     probationEmployeesCount,
     internshipEmployeesCount,
   ] = await Promise.all([
-    Department.countDocuments(),
-    User.countDocuments({ role: { $ne: "admin" }, is_active: true }),
+    Department.countDocuments({ company_id: companyId }),
     User.countDocuments({
+      company_id: companyId,
+      role: { $ne: "admin" },
+      is_active: true,
+    }),
+    User.countDocuments({
+      company_id: companyId,
       employment_status: "permanent",
       role: { $ne: "admin" },
       is_active: true,
     }),
     User.countDocuments({
+      company_id: companyId,
       employment_status: "probation",
       role: { $ne: "admin" },
       is_active: true,
     }),
     User.countDocuments({
+      company_id: companyId,
       employment_status: "internship",
       role: { $ne: "admin" },
       is_active: true,
@@ -123,7 +149,11 @@ export const GetDepartmentStatsService = async () => {
   };
 };
 
-export const UpdateDepartmentService = async (departmentId, body) => {
+export const UpdateDepartmentService = async (
+  companyId,
+  departmentId,
+  body
+) => {
   //updateddd 5
   const { name, team_ids } = body;
 
@@ -138,8 +168,8 @@ export const UpdateDepartmentService = async (departmentId, body) => {
     updatedDepartmentData.$pull = { teams: { $in: team_ids } };
   }
 
-  const updatedDepartment = await Department.findByIdAndUpdate(
-    departmentId,
+  const updatedDepartment = await Department.findOneAndUpdate(
+    { _id: departmentId, company_id: companyId },
     updatedDepartmentData,
     { new: true }
   ).populate({
@@ -159,8 +189,11 @@ export const UpdateDepartmentService = async (departmentId, body) => {
   return updatedDepartment.toObject();
 };
 
-export const DeleteDepartmentService = async (departmentId) => {
-  const department = await Department.findById(departmentId);
+export const DeleteDepartmentService = async (companyId, departmentId) => {
+  const department = await Department.findOne({
+    _id: departmentId,
+    company_id: companyId,
+  });
   if (!department) {
     throw new AppError("Department not found", 400);
   }
@@ -174,7 +207,10 @@ export const DeleteDepartmentService = async (departmentId) => {
     );
   }
   const teamIds = department.teams;
-  await Team.deleteMany({ _id: { $in: teamIds } });
-  const deletedDepartment = await Department.findByIdAndDelete(departmentId);
+  await Team.deleteMany({ company_id: companyId, _id: { $in: teamIds } });
+  const deletedDepartment = await Department.findOneAndDelete({
+    _id: departmentId,
+    company_id: companyId,
+  });
   return deletedDepartment;
 };

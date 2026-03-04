@@ -6,9 +6,9 @@ export const getRecentRequestsController = async (req, res) => {
     const requester = req.user;
     const { scope = "self" } = req.query;
 
-    const recentRequests = await getRecentRequestsService(requester, scope);
+    const recentRequests = await getRecentRequestsService(req, scope);
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Recent requests fetched successfully",
@@ -17,7 +17,7 @@ export const getRecentRequestsController = async (req, res) => {
     });
   } catch (error) {
     console.error("Error in getRecentRequestsController:", error);
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Internal server error",

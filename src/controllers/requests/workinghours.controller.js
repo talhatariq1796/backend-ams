@@ -11,6 +11,7 @@ import { NOTIFICATION_TYPES } from "../../constants/notificationTypes.js";
 import RecentRequests from "../../models/requests/recentRequest.model.js";
 import Teams from "../../models/team.model.js";
 import Users from "../../models/user.model.js";
+import { getCompanyId } from "../../utils/company.util.js";
 
 export const CreateRequest = async (req, res) => {
   checkUserAuthorization(req.user);
@@ -54,12 +55,13 @@ export const CreateRequest = async (req, res) => {
       user_id: req.user._id,
       start_date: start,
       end_date: end,
+      companyId: req.company_id,
     });
 
     if (existingOverlap) {
       throw new AppError(
         "You already have a request for this date range.",
-        400
+        400,
       );
     }
 
@@ -76,7 +78,7 @@ export const CreateRequest = async (req, res) => {
       expiry_date: !until_i_change ? end_date : null,
     };
 
-    const request = await workingHoursService.createRequest(requestData);
+    const request = await workingHoursService.createRequest(req, requestData);
 
     if (request) {
       let notifyAdmins = false;
@@ -85,7 +87,7 @@ export const CreateRequest = async (req, res) => {
 
       if (req.user.role === "employee") {
         const team = await Teams.findById(req.user.team).populate("leads");
-        const leads = (team && team.leads) ? team.leads : [];
+        const leads = team && team.leads ? team.leads : [];
         if (leads.length > 0) {
           notification_to = leads[0]._id;
           if (leads.length > 1) {
@@ -97,7 +99,7 @@ export const CreateRequest = async (req, res) => {
         notifyAdmins = true;
       }
 
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         notification_to,
         moreUsers,
@@ -107,7 +109,9 @@ export const CreateRequest = async (req, res) => {
         role: "admin",
       });
 
+      const companyId = getCompanyId(req);
       await RecentRequests.create({
+        company_id: companyId || undefined,
         userId: req.user._id,
         type: "workingHours",
         referenceId: request._id,
@@ -115,7 +119,7 @@ export const CreateRequest = async (req, res) => {
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 201,
       message: "Working Hours request created",
@@ -123,7 +127,7 @@ export const CreateRequest = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Internal server error",
@@ -136,18 +140,21 @@ export const DeleteRequest = async (req, res) => {
   checkUserAuthorization(req.user);
   try {
     const request = await workingHoursService.deleteRequest(
+      req,
       req.params.id,
       req.user._id,
-      req.user.role
+      req.user.role,
     );
 
     if (request) {
+      const companyId = getCompanyId(req);
       await RecentRequests.deleteOne({
+        ...(companyId && { company_id: companyId }),
         referenceId: req.params.id,
         type: "workingHours",
       });
 
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         notification_to: req.user.role === "admin" ? request.user_id : null,
         type: NOTIFICATION_TYPES.WORKING_HOURS_REQUEST,
@@ -156,14 +163,14 @@ export const DeleteRequest = async (req, res) => {
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Request deleted successfully",
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -191,15 +198,16 @@ export const GetUserRequestsById = async (req, res) => {
     }
 
     const response = await workingHoursService.getUserRequests(
+      req,
       userId,
       filter_type,
       start_date,
       end_date,
       status,
       page,
-      limit
+      limit,
     );
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Working hours requests retrieved successfully",
@@ -207,7 +215,7 @@ export const GetUserRequestsById = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode,
       message: error.message,
@@ -224,13 +232,13 @@ export const UpdateWorkingHoursRequestStatus = async (req, res) => {
     if (!["approved", "rejected"].includes(status)) {
       throw new AppError(
         "Invalid status. Must be 'approved' or 'rejected'",
-        400
+        400,
       );
     }
     if (status === "rejected" && !rejection_reason) {
       throw new AppError(
         "Rejection reason is required when rejecting a request.",
-        400
+        400,
       );
     }
 
@@ -238,10 +246,11 @@ export const UpdateWorkingHoursRequestStatus = async (req, res) => {
     const adminName = req.user.first_name;
 
     const updatedRequest = await workingHoursService.changeRequestStatus(
+      req,
       id,
       status,
       adminName,
-      rejection_reason
+      rejection_reason,
     );
     if (updatedRequest) {
       // Create specific message based on status
@@ -258,7 +267,7 @@ export const UpdateWorkingHoursRequestStatus = async (req, res) => {
         notifyAdmins: false,
       });
     }
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: `Working hours request ${status} successfully`,
@@ -266,7 +275,7 @@ export const UpdateWorkingHoursRequestStatus = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode,
       message: error.message,
@@ -294,7 +303,8 @@ export const GetAllUserRequests = async (req, res) => {
     } = req.query;
 
     const requests = await workingHoursService.GetAllUserRequestsService(
-      req.user, // Pass logged-in user info
+      req,
+      req.user,
       view_scope,
       filter_type,
       start_date,
@@ -304,10 +314,10 @@ export const GetAllUserRequests = async (req, res) => {
       department_id,
       search,
       page,
-      limit
+      limit,
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Working Hours request retrieved successfully",
@@ -315,7 +325,7 @@ export const GetAllUserRequests = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -327,10 +337,10 @@ export const GetAllUserRequests = async (req, res) => {
 export const GetPendingWorkingHoursCount = async (req, res, next) => {
   try {
     const result = await workingHoursService.GetPendingWorkingHoursCountService(
-      req.user
+      req.user,
     );
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Pending working hours count fetched successfully",
@@ -388,17 +398,18 @@ export const AdminEditWorkingHoursRequest = async (req, res) => {
     };
 
     Object.keys(editData).forEach(
-      (key) => editData[key] === undefined && delete editData[key]
+      (key) => editData[key] === undefined && delete editData[key],
     );
 
     const updatedRequest =
       await workingHoursService.AdminEditWorkingHoursRequest(
+        req,
         id,
         editData,
-        req.user
+        req.user,
       );
 
-    await createLogsAndNotification({
+    createLogsAndNotification({
       notification_by: req.user._id,
       notification_to: updatedRequest.user._id,
       type: NOTIFICATION_TYPES.WORKING_HOURS_REQUEST,
@@ -406,7 +417,7 @@ export const AdminEditWorkingHoursRequest = async (req, res) => {
       notifyAdmins: false,
     });
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Working hours request updated successfully",
@@ -414,7 +425,7 @@ export const AdminEditWorkingHoursRequest = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,
@@ -476,14 +487,15 @@ export const UserEditWorkingHoursRequest = async (req, res) => {
 
     // Remove undefined values
     Object.keys(editData).forEach(
-      (key) => editData[key] === undefined && delete editData[key]
+      (key) => editData[key] === undefined && delete editData[key],
     );
 
     const updatedRequest =
       await workingHoursService.UserEditWorkingHoursRequest(
+        req,
         id,
         editData,
-        req.user
+        req.user,
       );
 
     // Create notification for admin/team lead(s)
@@ -493,7 +505,7 @@ export const UserEditWorkingHoursRequest = async (req, res) => {
 
     if (req.user.role === "employee") {
       const team = await Teams.findById(req.user.team).populate("leads");
-      const leads = (team && team.leads) ? team.leads : [];
+      const leads = team && team.leads ? team.leads : [];
       if (leads.length > 0) {
         notification_to = leads[0]._id;
         if (leads.length > 1) {
@@ -505,7 +517,7 @@ export const UserEditWorkingHoursRequest = async (req, res) => {
       notifyAdmins = true;
     }
 
-    await createLogsAndNotification({
+    createLogsAndNotification({
       notification_by: req.user._id,
       notification_to,
       moreUsers,
@@ -515,7 +527,7 @@ export const UserEditWorkingHoursRequest = async (req, res) => {
       role: "admin",
     });
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Working hours request updated successfully",
@@ -523,7 +535,7 @@ export const UserEditWorkingHoursRequest = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message,

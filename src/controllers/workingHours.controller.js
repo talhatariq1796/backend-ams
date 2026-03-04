@@ -14,10 +14,10 @@ export const UpsertWorkingHours = async (req, res) => {
     }
     const data = req.body;
     const updatedWorkingHours =
-      await WorkingHoursService.UpsertWorkingHoursService(userId, data);
+      await WorkingHoursService.UpsertWorkingHoursService(req, userId, data);
 
     if (updatedWorkingHours) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         notification_to: userId,
         type: NOTIFICATION_TYPES.WORKING_HOURS,
@@ -26,7 +26,7 @@ export const UpsertWorkingHours = async (req, res) => {
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Office configuration updated successfully",
@@ -34,7 +34,7 @@ export const UpsertWorkingHours = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode,
       message: error.message,
@@ -57,11 +57,12 @@ export const UpsertWorkingHoursForMultipleUsers = async (req, res) => {
     }
 
     const results = await WorkingHoursService.UpsertWorkingHoursForUsersService(
+      req,
       userIds,
       workingHoursData
     );
 
-    await createLogsAndNotification({
+    createLogsAndNotification({
       notification_by: req.user._id,
       type: NOTIFICATION_TYPES.WORKING_HOURS,
       message: `updated working hours`,
@@ -69,7 +70,7 @@ export const UpsertWorkingHoursForMultipleUsers = async (req, res) => {
       moreUsers: userIds,
     });
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Working hours updated successfully for all users",
@@ -77,7 +78,7 @@ export const UpsertWorkingHoursForMultipleUsers = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Something went wrong",
@@ -94,9 +95,9 @@ export const GetWorkingHoursByUserId = async (req, res) => {
     if (!isSelf) isAdmin(req.user);
 
     const workingHours =
-      await WorkingHoursService.GetWorkingHoursByUserIdService(userId);
+      await WorkingHoursService.GetWorkingHoursByUserIdService(req, userId);
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: `Working hours retrieved successfully`,
@@ -104,7 +105,7 @@ export const GetWorkingHoursByUserId = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Something went wrong",
@@ -118,9 +119,9 @@ export const ResetWorkingHours = async (req, res) => {
     checkUserAuthorization(req.user);
     isAdmin(req.user);
 
-    const respone = await WorkingHoursService.ResetAllWorkingHoursService();
+    const respone = await WorkingHoursService.ResetAllWorkingHoursService(req);
     if (respone) {
-      await createLogsAndNotification({
+      createLogsAndNotification({
         notification_by: req.user._id,
         type: NOTIFICATION_TYPES.WORKING_HOURS,
         message: `Reset working hours to default.`,
@@ -129,14 +130,14 @@ export const ResetWorkingHours = async (req, res) => {
       });
     }
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "All working hours reset successfully",
       success: true,
     });
   } catch (error) {
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: error.statusCode || 500,
       message: error.message || "Failed to reset working hours",

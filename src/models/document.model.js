@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 const DocumentSchema = mongoose.Schema(
   {
+    company_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Companies",
+      required: true,
+      index: true,
+    },
     document_name: {
       type: String,
       required: true,
@@ -49,5 +55,9 @@ const DocumentSchema = mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Indexes
+// company_id already has index: true
+DocumentSchema.index({ company_id: 1, document_type: 1 });
 
 export default mongoose.model("Documents", DocumentSchema);

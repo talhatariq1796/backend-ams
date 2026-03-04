@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import User from "../models/user.model.js";
 import Suggestion from "../models/suggestion.model.js";
+import Company from "../models/company.model.js";
 import {
   birthdayTemplates,
   anniversaryTemplates,
@@ -9,7 +10,6 @@ import { createLogsAndNotification } from "../utils/logNotification.js";
 import { NOTIFICATION_TYPES } from "../constants/notificationTypes.js";
 import { runCronWithRetry } from "../utils/cronRunner.util.js";
 
-const GENERAL_ADMIN_ID = "686b817b00c74fe33a6d5729";
 const PKT_TIMEZONE = "Asia/Karachi"; // UTC+5
 
 // helper: returns a unique template each call
@@ -44,6 +44,12 @@ const getPKTMonthDay = (utcDate) => {
 // Runs at 6:00 AM PKT (1:00 AM UTC)
 const celebrationPostJob = cron.schedule("0 1 * * *", () => {
   runCronWithRetry("Celebration Post Cron", async () => {
+    console.log("🎉 Starting Celebration Post Cron - Multi-Tenant Mode");
+    
+    // Get all active companies
+    const companies = await Company.find({ is_active: true, status: "approved" });
+    console.log(`📊 Found ${companies.length} active companies`);
+
     const now = new Date();
 
     // Get today's date in Pakistan timezone
@@ -85,200 +91,232 @@ const celebrationPostJob = cron.schedule("0 1 * * *", () => {
       end: startOfTomorrowPKT.toISOString(),
     });
 
-    const users = await User.find({ is_active: true }).populate({
-      path: "team",
-      populate: { path: "department" },
-    });
+    // Process each company
+    for (const company of companies) {
+      console.log(`\n🏢 Processing company: ${company.company_name} (${company._id})`);
 
-    console.log(`📋 Total active users found: ${users.length}`);
+      // Get company's admin or first admin user as the poster
+      const adminUser = await User.findOne({ 
+        company_id: company._id,
+        role: "admin",
+        is_active: true 
+      }).sort({ createdAt: 1 });
 
-    const todayBirthdays = [];
-    const todayAnniversaries = [];
+      if (!adminUser) {
+        console.log(`⏭️  No admin found for company ${company.company_name}, skipping...`);
+        continue;
+      }
 
-    // Filter users by birthday and anniversary
-    for (const user of users) {
-      // Check for birthdays
-      if (user.date_of_birth) {
-        const userBirthdayMonthDay = getPKTMonthDay(user.date_of_birth);
+      const GENERAL_ADMIN_ID = adminUser._id;
 
-        console.log(
-          `👤 ${user.first_name} ${
-            user.last_name
-          }: DOB (UTC) ${user.date_of_birth.toISOString()} → (PKT) ${userBirthdayMonthDay} ${
-            userBirthdayMonthDay === todayMonthDay ? "🎂 MATCH!" : ""
-          }`
-        );
+      const users = await User.find({ 
+        company_id: company._id,
+        is_active: true 
+      }).populate({
+        path: "team",
+        populate: { path: "department" },
+      });
 
-        if (userBirthdayMonthDay === todayMonthDay) {
-          todayBirthdays.push(user);
+      console.log(`📋 Found ${users.length} active users in ${company.company_name}`);
+
+      const todayBirthdays = [];
+      const todayAnniversaries = [];
+
+      // Filter users by birthday and anniversary
+      for (const user of users) {
+        // Check for birthdays
+        if (user.date_of_birth) {
+          const userBirthdayMonthDay = getPKTMonthDay(user.date_of_birth);
+
+          console.log(
+            `👤 ${user.first_name} ${
+              user.last_name
+            }: DOB (UTC) ${user.date_of_birth.toISOString()} → (PKT) ${userBirthdayMonthDay} ${
+              userBirthdayMonthDay === todayMonthDay ? "🎂 MATCH!" : ""
+            }`
+          );
+
+          if (userBirthdayMonthDay === todayMonthDay) {
+            todayBirthdays.push(user);
+          }
+        }
+
+        // Check for anniversaries
+        if (user.joining_date) {
+          const userJoiningMonthDay = getPKTMonthDay(user.joining_date);
+
+          // Get the year in PKT timezone
+          const joiningDatePKT = new Date(
+            user.joining_date.toLocaleString("en-US", { timeZone: PKT_TIMEZONE })
+          );
+          const joiningYear = joiningDatePKT.getFullYear();
+          const currentYear = todayPKT.getFullYear();
+
+          console.log(
+            `👤 ${user.first_name} ${
+              user.last_name
+            }: Joining (UTC) ${user.joining_date.toISOString()} → (PKT) ${userJoiningMonthDay}, year: ${joiningYear}`
+          );
+
+          // Only celebrate if at least 1 year has passed
+          if (
+            userJoiningMonthDay === todayMonthDay &&
+            currentYear > joiningYear
+          ) {
+            todayAnniversaries.push(user);
+            const yearsOfService = currentYear - joiningYear;
+            console.log(
+              `  🎊 ✅ ANNIVERSARY MATCH! (${yearsOfService} year${
+                yearsOfService > 1 ? "s" : ""
+              })`
+            );
+          }
         }
       }
 
-      // Check for anniversaries
-      if (user.joining_date) {
-        const userJoiningMonthDay = getPKTMonthDay(user.joining_date);
+      console.log(
+        `\n📊 Summary for ${company.company_name}: ${todayBirthdays.length} birthdays, ${todayAnniversaries.length} anniversaries`
+      );
 
-        // Get the year in PKT timezone
+      const celebrationPosts = [];
+      const usedBirthdayTemplates = new Set();
+      const usedAnniversaryTemplates = new Set();
+
+      // 🎂 Birthday Posts
+      for (const user of todayBirthdays) {
+        const already = await Suggestion.findOne({
+          company_id: company._id,
+          celebration_type: "birthday",
+          created_for_user: user._id,
+          createdAt: { $gte: startOfTodayPKT, $lt: startOfTomorrowPKT },
+        }).lean();
+
+        if (already) {
+          console.log(
+            `⏭️  Skipping ${user.first_name} - birthday post already exists`
+          );
+          continue;
+        }
+
+        const template = getUniqueTemplate(
+          birthdayTemplates,
+          usedBirthdayTemplates
+        );
+        const title = `🎉 Birthday Alert: ${user.first_name} ${user.last_name}`;
+        const description = template.replace("{name}", user.first_name);
+
+        const visibleDepartments = user?.team?.department?._id
+          ? [user.team.department._id]
+          : [];
+
+        const post = await Suggestion.create({
+          company_id: company._id,
+          title,
+          description,
+          category: "culture",
+          celebration_type: "birthday",
+          created_by: GENERAL_ADMIN_ID,
+          created_for_user: user._id,
+          visible_to_departments: visibleDepartments,
+          is_identity_hidden: false,
+          is_visible_to_admin_only: false,
+        });
+
+        await createLogsAndNotification({
+          notification_by: GENERAL_ADMIN_ID,
+          company_id: company._id,
+          type: NOTIFICATION_TYPES.SUGGESTIONS,
+          message: ` created a birthday post for ${user.first_name} ${user.last_name}`,
+          notifyDepartments: visibleDepartments,
+          hideNotificationIdentity: false,
+        });
+
+        celebrationPosts.push(post._id);
+        console.log(
+          `✨ Created birthday post for ${user.first_name} ${user.last_name}`
+        );
+      }
+
+      // 🎊 Anniversary Posts
+      for (const user of todayAnniversaries) {
+        const already = await Suggestion.findOne({
+          company_id: company._id,
+          celebration_type: "anniversary",
+          created_for_user: user._id,
+          createdAt: { $gte: startOfTodayPKT, $lt: startOfTomorrowPKT },
+        }).lean();
+
+        if (already) {
+          console.log(
+            `⏭️  Skipping ${user.first_name} - anniversary post already exists`
+          );
+          continue;
+        }
+
+        const template = getUniqueTemplate(
+          anniversaryTemplates,
+          usedAnniversaryTemplates
+        );
+
+        // Calculate years of service in PKT timezone
         const joiningDatePKT = new Date(
           user.joining_date.toLocaleString("en-US", { timeZone: PKT_TIMEZONE })
         );
-        const joiningYear = joiningDatePKT.getFullYear();
-        const currentYear = todayPKT.getFullYear();
+        const yearsOfService =
+          todayPKT.getFullYear() - joiningDatePKT.getFullYear();
 
+        const title = `🎊 Anniversary Alert: ${user.first_name} ${
+          user.last_name
+        } - ${yearsOfService} Year${yearsOfService > 1 ? "s" : ""}`;
+        const description = template
+          .replace("{name}", user.first_name)
+          .replace("{years}", yearsOfService);
+
+        const visibleDepartments = user?.team?.department?._id
+          ? [user.team.department._id]
+          : [];
+
+        const post = await Suggestion.create({
+          company_id: company._id,
+          title,
+          description,
+          category: "culture",
+          celebration_type: "anniversary",
+          created_by: GENERAL_ADMIN_ID,
+          created_for_user: user._id,
+          visible_to_departments: visibleDepartments,
+          is_identity_hidden: false,
+          is_visible_to_admin_only: false,
+        });
+
+        await createLogsAndNotification({
+          notification_by: GENERAL_ADMIN_ID,
+          company_id: company._id,
+          type: NOTIFICATION_TYPES.SUGGESTIONS,
+          message: ` created an anniversary post for ${user.first_name} ${user.last_name}`,
+          notifyDepartments: visibleDepartments,
+          hideNotificationIdentity: false,
+        });
+
+        celebrationPosts.push(post._id);
         console.log(
-          `👤 ${user.first_name} ${
-            user.last_name
-          }: Joining (UTC) ${user.joining_date.toISOString()} → (PKT) ${userJoiningMonthDay}, year: ${joiningYear}`
+          `✨ Created anniversary post for ${user.first_name} ${user.last_name}`
         );
-
-        // Only celebrate if at least 1 year has passed
-        if (
-          userJoiningMonthDay === todayMonthDay &&
-          currentYear > joiningYear
-        ) {
-          todayAnniversaries.push(user);
-          const yearsOfService = currentYear - joiningYear;
-          console.log(
-            `  🎊 ✅ ANNIVERSARY MATCH! (${yearsOfService} year${
-              yearsOfService > 1 ? "s" : ""
-            })`
-          );
-        }
       }
-    }
+
+      console.log(
+        `\n✅ Completed celebrations for ${company.company_name}. Created ${
+          celebrationPosts.length
+        } post${celebrationPosts.length !== 1 ? "s" : ""}.`
+      );
+      if (celebrationPosts.length > 0) {
+        console.log(`   Post IDs: ${celebrationPosts.join(", ")}`);
+      }
+    } // End company loop
 
     console.log(
-      `\n📊 Summary: ${todayBirthdays.length} birthdays, ${todayAnniversaries.length} anniversaries`
+      `\n✅ Celebration Post Cron completed for all companies.`
     );
-
-    const celebrationPosts = [];
-    const usedBirthdayTemplates = new Set();
-    const usedAnniversaryTemplates = new Set();
-
-    // 🎂 Birthday Posts
-    for (const user of todayBirthdays) {
-      const already = await Suggestion.findOne({
-        celebration_type: "birthday",
-        created_for_user: user._id,
-        createdAt: { $gte: startOfTodayPKT, $lt: startOfTomorrowPKT },
-      }).lean();
-
-      if (already) {
-        console.log(
-          `⏭️  Skipping ${user.first_name} - birthday post already exists`
-        );
-        continue;
-      }
-
-      const template = getUniqueTemplate(
-        birthdayTemplates,
-        usedBirthdayTemplates
-      );
-      const title = `🎉 Birthday Alert: ${user.first_name} ${user.last_name}`;
-      const description = template.replace("{name}", user.first_name);
-
-      const visibleDepartments = user?.team?.department?._id
-        ? [user.team.department._id]
-        : [];
-
-      const post = await Suggestion.create({
-        title,
-        description,
-        category: "culture",
-        celebration_type: "birthday",
-        created_by: GENERAL_ADMIN_ID,
-        created_for_user: user._id,
-        visible_to_departments: visibleDepartments,
-        is_identity_hidden: false,
-        is_visible_to_admin_only: false,
-      });
-
-      await createLogsAndNotification({
-        notification_by: GENERAL_ADMIN_ID,
-        type: NOTIFICATION_TYPES.SUGGESTIONS,
-        message: ` created a birthday post for ${user.first_name} ${user.last_name}`,
-        notifyDepartments: visibleDepartments,
-        hideNotificationIdentity: false,
-      });
-
-      celebrationPosts.push(post._id);
-      console.log(
-        `✨ Created birthday post for ${user.first_name} ${user.last_name}`
-      );
-    }
-
-    // 🎊 Anniversary Posts
-    for (const user of todayAnniversaries) {
-      const already = await Suggestion.findOne({
-        celebration_type: "anniversary",
-        created_for_user: user._id,
-        createdAt: { $gte: startOfTodayPKT, $lt: startOfTomorrowPKT },
-      }).lean();
-
-      if (already) {
-        console.log(
-          `⏭️  Skipping ${user.first_name} - anniversary post already exists`
-        );
-        continue;
-      }
-
-      const template = getUniqueTemplate(
-        anniversaryTemplates,
-        usedAnniversaryTemplates
-      );
-
-      // Calculate years of service in PKT timezone
-      const joiningDatePKT = new Date(
-        user.joining_date.toLocaleString("en-US", { timeZone: PKT_TIMEZONE })
-      );
-      const yearsOfService =
-        todayPKT.getFullYear() - joiningDatePKT.getFullYear();
-
-      const title = `🎊 Anniversary Alert: ${user.first_name} ${
-        user.last_name
-      } - ${yearsOfService} Year${yearsOfService > 1 ? "s" : ""}`;
-      const description = template
-        .replace("{name}", user.first_name)
-        .replace("{years}", yearsOfService);
-
-      const visibleDepartments = user?.team?.department?._id
-        ? [user.team.department._id]
-        : [];
-
-      const post = await Suggestion.create({
-        title,
-        description,
-        category: "culture",
-        celebration_type: "anniversary",
-        created_by: GENERAL_ADMIN_ID,
-        created_for_user: user._id,
-        visible_to_departments: visibleDepartments,
-        is_identity_hidden: false,
-        is_visible_to_admin_only: false,
-      });
-
-      await createLogsAndNotification({
-        notification_by: GENERAL_ADMIN_ID,
-        type: NOTIFICATION_TYPES.SUGGESTIONS,
-        message: ` created an anniversary post for ${user.first_name} ${user.last_name}`,
-        notifyDepartments: visibleDepartments,
-        hideNotificationIdentity: false,
-      });
-
-      celebrationPosts.push(post._id);
-      console.log(
-        `✨ Created anniversary post for ${user.first_name} ${user.last_name}`
-      );
-    }
-
-    console.log(
-      `\n✅ Celebration Post Cron completed. Created ${
-        celebrationPosts.length
-      } post${celebrationPosts.length !== 1 ? "s" : ""}.`
-    );
-    if (celebrationPosts.length > 0) {
-      console.log(`   Post IDs: ${celebrationPosts.join(", ")}`);
-    }
   });
 });
 

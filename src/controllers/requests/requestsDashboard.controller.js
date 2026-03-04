@@ -8,12 +8,12 @@ export const GetDashboardCounts = async (req, res, next) => {
   try {
     const [leaveCount, remoteWorkCount, workingHours, suggestions] =
       await Promise.all([
-        GetPendingLeavesCountService(req.user),
-        GetPendingRemoteWorkCountService(req.user),
-        GetPendingWorkingHoursCountService(req.user),
+        GetPendingLeavesCountService(req, req.user),
+        GetPendingRemoteWorkCountService(req, req.user),
+        GetPendingWorkingHoursCountService(req, req.user),
       ]);
 
-    AppResponse({
+    return AppResponse({
       res,
       statusCode: 200,
       message: "Dashboard counts fetched successfully",
