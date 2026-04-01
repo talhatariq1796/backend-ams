@@ -52,12 +52,9 @@ const PORT = process.env.PORT || 8000;
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: [
-      process.env.LOCAL_FRONTEND_URL,
-      process.env.LIVE_FRONTEND_URL,
-      "https://ams-test1.netlify.app",
-    ],
+    origin: allowedOrigins,
     credentials: true,
+    methods: ["GET", "POST"],
   },
 });
 global.io = io;
@@ -76,16 +73,25 @@ io.on("connection", (socket) => {
   console.log(`🔌 Socket connected: ${userId || "admin"}`);
 });
 
+// CORS Configuration
+const allowedOrigins = [
+  "https://ams-test1.netlify.app",
+  process.env.LOCAL_FRONTEND_URL,
+  process.env.LIVE_FRONTEND_URL,
+].filter(Boolean); // Remove undefined values
+
 app.use(
   cors({
-    origin: [
-      process.env.LOCAL_FRONTEND_URL,
-      process.env.LIVE_FRONTEND_URL,
-      "https://ams-test1.netlify.app",
-    ],
+    origin: allowedOrigins,
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    maxAge: 86400,
   }),
 );
+
+// Handle preflight requests explicitly
+app.options("*", cors());
 
 // Routes
 
