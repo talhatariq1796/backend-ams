@@ -20,34 +20,21 @@ const config = {
   tenancy:
     "ocid1.tenancy.oc1..aaaaaaaapxsjg235bvlblqzjgr6ukffefvt6dskbx55e4liy4pmtqajikkoa",
   region: "ap-mumbai-1",
-  key_file: pemFilePath,
 };
 
-// For Live Deployment (Vercel)
-const isVercel = process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
-const configFilePath = isVercel 
-  ? path.resolve("/tmp", "oci_config")
-  : path.resolve(__dirname, "oci_config");
+// Read private key content
+const privateKey = fs.readFileSync(pemFilePath, "utf8");
 
-const configContent = `
-[DEFAULT]
-user=${config.user}
-fingerprint=${config.fingerprint}
-key_file=${config.key_file}
-tenancy=${config.tenancy}
-region=${config.region}
-`;
-
-try {
-  fs.writeFileSync(configFilePath, configContent);
-} catch (error) {
-  console.error("Error writing OCI config:", error);
-}
-
-// Initialize the Object Storage client
-const provider = new oci.common.ConfigFileAuthenticationDetailsProvider(
-  configFilePath
+// Initialize the Object Storage client (Pathless approach - NO writing to filesystem)
+const provider = new oci.common.SimpleAuthenticationDetailsProvider(
+  config.tenancy,
+  config.user,
+  config.fingerprint,
+  privateKey,
+  null, // passphrase
+  config.region
 );
+
 const client = new oci.objectstorage.ObjectStorageClient({
   authenticationDetailsProvider: provider,
 });
