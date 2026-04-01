@@ -6,41 +6,54 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Try multiple possible paths for Firebase service account
+const possiblePaths = [
+  path.resolve(__dirname, "../../whitebox-ams-firebase-adminsdk-fbsvc-388babdf43.json"),
+  path.resolve(process.cwd(), "whitebox-ams-firebase-adminsdk-fbsvc-388babdf43.json"),
+  process.env.FIREBASE_SERVICE_ACCOUNT_PATH,
+].filter(Boolean);
+
 let firebaseInitialized = false;
 
 // Only initialize if not already initialized
 if (admin.apps.length === 0) {
-  try {
-    let serviceAccount;
-
-    // Priority 1: Use environment variable (for Vercel/production)
-    if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  // Try environment variable JSON content first (standard for Vercel)
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    try {
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
       });
-      console.log("🔥 Firebase Admin Initialized from environment variable");
+      console.log("🔥 Firebase Admin Initialized from FIREBASE_SERVICE_ACCOUNT_JSON env");
       firebaseInitialized = true;
+    } catch (error) {
+      console.error("❌ Error initializing Firebase from environment variable:", error.message);
     }
-    // Priority 2: Try local file (for development)
-    else {
-      const localPath = path.resolve(__dirname, "../../whitebox-ams-firebase-adminsdk-fbsvc-388babdf43.json");
-      if (existsSync(localPath)) {
-        serviceAccount = JSON.parse(readFileSync(localPath, "utf-8"));
-        admin.initializeApp({
-          credential: admin.credential.cert(serviceAccount),
-        });
-        console.log("🔥 Firebase Admin Initialized from local file");
-        firebaseInitialized = true;
+  }
+
+  // If not initialized via env, try file paths
+  if (!firebaseInitialized) {
+    for (const serviceAccountPath of possiblePaths) {
+      if (serviceAccountPath && existsSync(serviceAccountPath)) {
+        try {
+          const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, "utf-8"));
+          admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+          });
+          console.log("🔥 Firebase Admin Initialized from file:", serviceAccountPath);
+          firebaseInitialized = true;
+          break;
+        } catch (error) {
+          console.error(`❌ Error initializing Firebase from ${serviceAccountPath}:`, error.message);
+        }
       }
     }
-
-    if (!firebaseInitialized) {
-      console.error("❌ Firebase Admin initialization failed");
-      console.error("   Ensure FIREBASE_SERVICE_ACCOUNT_JSON env variable is set on Vercel");
-    }
-  } catch (error) {
-    console.error("❌ Error initializing Firebase:", error.message);
+  }
+  
+  if (!firebaseInitialized) {
+    console.error("❌ Firebase Admin initialization failed - no service account found");
+    console.error("   Please ensure FIREBASE_SERVICE_ACCOUNT_JSON env variable is set on Vercel");
+    console.error("   Tried file paths:", possiblePaths);
   }
 } else {
   console.log("🔥 Firebase Admin already initialized");

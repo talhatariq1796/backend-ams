@@ -9,11 +9,7 @@ import { dirname } from "path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Determine if running on Vercel/serverless
-const isProduction = process.env.VERCEL === "1" || !fs.existsSync(__dirname);
-const tempDir = isProduction ? "/tmp" : __dirname;
-
-const pemFilePath = path.resolve(tempDir, "oci_api_key.pem");
+const pemFilePath = path.resolve(__dirname, "oci_api_key.pem");
 
 // OCI Configurations
 const bucket_name = "WhiteBox";
@@ -27,8 +23,11 @@ const config = {
   key_file: pemFilePath,
 };
 
-// Use /tmp for Vercel, __dirname for local
-const configFilePath = path.resolve(tempDir, "oci_config");
+// For Live Deployment (Vercel)
+const isVercel = process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
+const configFilePath = isVercel 
+  ? path.resolve("/tmp", "oci_config")
+  : path.resolve(__dirname, "oci_config");
 
 const configContent = `
 [DEFAULT]
@@ -41,9 +40,8 @@ region=${config.region}
 
 try {
   fs.writeFileSync(configFilePath, configContent);
-  console.log(`✅ OCI config written to: ${configFilePath}`);
 } catch (error) {
-  console.error(`❌ Error writing OCI config:`, error.message);
+  console.error("Error writing OCI config:", error);
 }
 
 // Initialize the Object Storage client
