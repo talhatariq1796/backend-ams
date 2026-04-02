@@ -20,21 +20,29 @@ const config = {
   tenancy:
     "ocid1.tenancy.oc1..aaaaaaaapxsjg235bvlblqzjgr6ukffefvt6dskbx55e4liy4pmtqajikkoa",
   region: "ap-mumbai-1",
+  key_file: pemFilePath,
 };
 
-// Read private key content
-const privateKey = fs.readFileSync(pemFilePath, "utf8");
+// For Live Deployment
+// const configFilePath = path.resolve("/tmp", "oci_config");
 
-// Initialize the Object Storage client (Pathless approach - NO writing to filesystem)
-const provider = new oci.common.SimpleAuthenticationDetailsProvider(
-  config.tenancy,
-  config.user,
-  config.fingerprint,
-  privateKey,
-  null, // passphrase
-  config.region
+// For local Testing
+const configFilePath = path.resolve(__dirname, "oci_config");
+
+const configContent = `
+[DEFAULT]
+user=${config.user}
+fingerprint=${config.fingerprint}
+key_file=${config.key_file}
+tenancy=${config.tenancy}
+region=${config.region}
+`;
+fs.writeFileSync(configFilePath, configContent);
+
+// Initialize the Object Storage client
+const provider = new oci.common.ConfigFileAuthenticationDetailsProvider(
+  configFilePath,
 );
-
 const client = new oci.objectstorage.ObjectStorageClient({
   authenticationDetailsProvider: provider,
 });
@@ -105,7 +113,7 @@ const UploadMultipleToOCI = () => async (req, res) => {
       fileUrls.push(fileUrl);
 
       console.log(
-        `File ${uploadIndex + 1} uploaded successfully: ${objectName}`
+        `File ${uploadIndex + 1} uploaded successfully: ${objectName}`,
       );
       uploadIndex++;
 
@@ -162,7 +170,7 @@ const UploadMultipleToOCIParallel = () => async (req, res) => {
     const fileUrls = await Promise.all(uploadPromises);
 
     console.log(
-      `All ${fileUrls.length} files uploaded successfully (parallel)`
+      `All ${fileUrls.length} files uploaded successfully (parallel)`,
     );
 
     return res.status(200).json({
